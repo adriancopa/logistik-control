@@ -1,3 +1,12 @@
+const TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', TILE_RESPALDO = 'https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png';
+function crearMapa(el, centro = [-17.78, -63.18], zoom = 11) {   // los mosaicos vistos se guardan en el dispositivo (sw.js): la 2.ª vez cargan al instante
+  const mapa = L.map(el, { preferCanvas: true, fadeAnimation: false }).setView(centro, zoom);
+  const opc = { maxZoom: 19, crossOrigin: true, updateWhenIdle: false, keepBuffer: 4, attribution: '© OpenStreetMap' };
+  let cap = L.tileLayer(TILE_URL, opc).addTo(mapa), errores = 0;
+  cap.on('tileerror', () => { if (++errores === 4) { mapa.removeLayer(cap); cap = L.tileLayer(TILE_RESPALDO, { ...opc, subdomains: 'abc' }).addTo(mapa); } });
+  return mapa;
+}
+const pinIcono = (txt, cls = '') => L.divIcon({ html: `<div class="pin ${cls}">${txt}</div>`, className: '', iconSize: [30, 30], iconAnchor: [15, 15] });
 // LOGISTIK CONTROL — App móvil (chofer y solicitante). Offline-first: toda acción del chofer entra a una cola local
 // (IndexedDB) con hora y GPS tomados automáticamente por el dispositivo, y se sincroniza al servidor cuando hay red.
 const $ = (s, r = document) => r.querySelector(s);
@@ -7,7 +16,7 @@ const native = !!(Cap && Cap.isNativePlatform && Cap.isNativePlatform());
 const plugin = (n) => Cap.registerPlugin(n);
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now().toString(36) + Math.random().toString(36).slice(2));
 const TZ_MIN = -240;                       // hora de planificación: Bolivia (UTC-4)
-const SOLO_VIAJE = ['VIAJE', 'ENTREGA_VEHICULO'];
+const SOLO_VIAJE = ['VIAJE', 'ENTREGA_VEHICULO', 'ESPERA'];
 const FINAL = ['FINALIZADA', 'OMITIDA'];
 const CAUSAS = { TRAFICO: 'Tráfico', AVERIA: 'Avería', ESPERA_CARGA: 'Espera para cargar', ESPERA_DESCARGA: 'Espera para descargar', FALTA_PRODUCTO: 'Falta de producto', FALTA_DOCUMENTACION: 'Falta de documentación', CLIENTE_NO_DISPONIBLE: 'Cliente no disponible', DIRECCION_INCORRECTA: 'Dirección incorrecta', CAMBIO_PRIORIDAD: 'Cambio de prioridad', SOLICITUD_URGENTE: 'Solicitud urgente', PROBLEMA_VEHICULO: 'Problema del vehículo', CLIMA: 'Condición climática', OTRO: 'Otro' };
 
@@ -157,7 +166,9 @@ async function boot() {
 function loginView(msg = '') {
   app.innerHTML = `<main><div class="login"><div class="logo">🚚</div><h1>Logistik Control</h1><p class="mut" style="text-align:center;margin:0 0 14px">Ingrese con su usuario y PIN</p><div class="card">
     <label>Usuario</label><input id="u" autocapitalize="off" autocomplete="username" placeholder="Su usuario"><label>PIN</label><input id="p" type="password" inputmode="numeric" autocomplete="current-password" placeholder="Su clave numérica">
-    <div class="err" id="e">${esc(msg)}</div><button class="big" id="go">Ingresar</button></div><button class="sec link" id="cfgsync">☁ Conectar con Google Sheets</button></div></main>`;
+    <div class="err" id="e">${esc(msg)}</div><button class="big" id="go">Ingresar</button></div><div id="nube"></div><button class="sec link" id="cfgsync">☁ Conectar con Google Sheets</button></div></main>`;
+  const aviso = () => { const e = window.LC_SYNC || {}, n = $('#nube'); if (n) n.innerHTML = e.estado === 'sin-clave' ? '<div class="card alerta"><b>🔑 Este equipo todavía no está conectado a la nube.</b><div class="mut">Abra el enlace de acceso que le dio el administrador, o conéctelo con la clave. Sin eso no verá los usuarios ni los datos de la empresa.</div><button class="big" id="cn2">Conectar con la nube</button></div>' : e.estado === "sin-red" ? '<div class="nota">Sin conexión a internet: se usarán los datos guardados en este equipo.</div>' : ''; if ($('#cn2')) $('#cn2').onclick = conectarNube; };
+  aviso(); window.addEventListener('lc-sync', aviso, { once: false });
   const go = async () => {
     S.token = null; $('#e').textContent = ''; $('#go').disabled = true; $('#go').textContent = 'Ingresando…';
     try {
@@ -175,7 +186,7 @@ function loginView(msg = '') {
   $('#cfgsync').onclick = conectarNube;
 }
 // ----- Sincronización con Google Sheets -----
-const ETQ = { local: '⚪ Solo en este teléfono', ok: '🟢 Sincronizado', sincronizando: '🔄 Sincronizando…', 'sin-red': '🟠 Sin conexión', error: '🔴 Error de sincronización' };
+const ETQ = { 'sin-clave': '🔑 Falta conectar con la nube', local: '⚪ Solo en este teléfono', ok: '🟢 Sincronizado', sincronizando: '🔄 Sincronizando…', 'sin-red': '🟠 Sin conexión', error: '🔴 Error de sincronización' };
 function chipSync() { const e = window.LC_SYNC || { estado: 'local', pendientes: 0 }; return (ETQ[e.estado] || ETQ.local) + (e.pendientes ? ` · ${e.pendientes}` : ''); }
 window.addEventListener('lc-sync', () => { const c = $('#syncchip'); if (c) c.textContent = chipSync(); });
 let rt = null;
@@ -245,10 +256,11 @@ function choferView(m) {
     const l = lugar(cur), p = S.pos; let dist = '';
     if (l.lat != null && p) { const d = haversineM(p.lat, p.lon, l.lat, l.lon); dist = `<div class="kv"><span>📏 Distancia al destino</span><b>${(d / 1000).toFixed(1)} km · ~${Math.max(1, Math.round(d / 1000 / 30 * 60))} min</b></div>`; }
     const e = est(cur), solo = SOLO_VIAJE.includes(cur.tipo), nxt = acts[acts.indexOf(cur) + 1];
-    const pasos = solo ? [['🚚', 'Viaje'], ['📍', 'Llegada']] : [['🚚', 'Viaje'], ['📍', 'Llegada'], ['⚙️', 'Trabajo'], ['✅', 'Fin']];
+    const pasos = solo ? (cur.tipo === 'ESPERA' ? [['⏸️', 'Pausa'], ['▶️', 'Fin']] : [['🚚', 'Viaje'], ['📍', 'Llegada']]) : [['🚚', 'Viaje'], ['📍', 'Llegada'], ['⚙️', 'Trabajo'], ['✅', 'Fin']];
     const ix = solo ? { PENDIENTE: 0, EN_VIAJE: 1 }[e] : { PENDIENTE: 1, EN_VIAJE: 1, LLEGO: 2, EN_OPERACION: 3 }[e];
     const dest = esc(l.nombre || 'el destino');
-    const btn = { PENDIENTE: solo ? ['vi', '🚚 INICIAR VIAJE', '', `Toque cuando salga hacia <b>${dest}</b>.`] : ['ll', '📍 REGISTRAR LLEGADA', 'nar', `Ya está en <b>${dest}</b>? Toque para registrar su llegada (se guarda hora y ubicación solas).`], EN_VIAJE: ['ll', '📍 REGISTRAR LLEGADA', 'nar', `Toque cuando llegue a <b>${dest}</b>. La hora y la ubicación se guardan solas.`], LLEGO: ['io', '⚙️ INICIAR TRABAJO', 'ok', 'Toque cuando empiece a cargar o descargar.'], EN_OPERACION: ['fo', '✅ TERMINAR TRABAJO', 'bad', 'Toque al terminar. Podrá anotar el peso real y tomar una foto.'] }[e];
+    const pausa = cur.tipo === 'ESPERA';
+    const btn = { PENDIENTE: solo ? ['vi', pausa ? '⏸️ INICIAR PAUSA' : '🚚 INICIAR VIAJE', '', pausa ? 'Toque cuando empiece su pausa o almuerzo.' : `Toque cuando salga hacia <b>${dest}</b>.`] : ['ll', '📍 REGISTRAR LLEGADA', 'nar', `Ya está en <b>${dest}</b>? Toque para registrar su llegada (se guarda hora y ubicación solas).`], EN_VIAJE: ['ll', pausa ? '▶️ TERMINAR PAUSA' : '📍 REGISTRAR LLEGADA', 'nar', pausa ? 'Toque cuando retome el trabajo.' : `Toque cuando llegue a <b>${dest}</b>. La hora y la ubicación se guardan solas.`], LLEGO: ['io', '⚙️ INICIAR TRABAJO', 'ok', 'Toque cuando empiece a cargar o descargar.'], EN_OPERACION: ['fo', '✅ TERMINAR TRABAJO', 'bad', 'Toque al terminar. Podrá anotar el peso real y tomar una foto.'] }[e];
     body = `<div class="card act-card"><div class="row" style="justify-content:space-between;align-items:center"><span class="chip">ACTIVIDAD ${cur.numero} DE ${acts.length}</span><span class="chip ${e === 'PENDIENTE' ? '' : 'ok'}">${esc({ PENDIENTE: 'Por iniciar', EN_VIAJE: 'En camino', LLEGO: 'Llegó', EN_OPERACION: 'Trabajando' }[e])}</span></div>
       <h2 style="margin:10px 0 4px">${esc(cur.actividad)}</h2>
       <div class="kv"><span>📍 Destino</span><b>${esc(l.nombre || '—')}</b></div><div class="kv"><span>🕒 Horario planificado</span><b>${esc(cur.hora_inicio_plan)} – ${esc(cur.hora_fin_plan)}</b></div>${dist}${cur.peso_kg ? `<div class="kv"><span>⚖️ Carga</span><b>${cur.peso_kg > 0 ? 'subir' : 'bajar'} ${Math.abs(cur.peso_kg)} kg</b></div>` : ''}
@@ -299,7 +311,7 @@ function rutaDelDia() {
     $('#cerrar', m).onclick = close; $('#gm', m).onclick = () => window.open(url(), '_system');
     m.querySelectorAll('[data-ll]').forEach((b) => (b.onclick = () => { const p = paradas[+b.dataset.ll]; window.open(`https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=${p.lat},${p.lon}`, '_system'); }));
     if (window.L) setTimeout(() => {
-      const mapa = L.map('rutamap', { zoomControl: true }).setView([paradas[0].lat, paradas[0].lon], 12); L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(mapa);
+      const mapa = crearMapa('rutamap', [paradas[0].lat, paradas[0].lon], 12);
       L.polyline(paradas.map((p) => [p.lat, p.lon]), { color: '#2563eb', weight: 4, dashArray: '8 6' }).addTo(mapa);
       paradas.forEach((p) => L.marker([p.lat, p.lon], { icon: L.divIcon({ html: `<div class="pin ${p.hecha ? 'ok' : p.n - 1 === actual ? 'now' : ''}">${p.hecha ? '✓' : p.n}</div>`, className: '', iconSize: [30, 30], iconAnchor: [15, 15] }) }).bindPopup(esc(p.nombre)).addTo(mapa));
       const ajustar = () => { mapa.invalidateSize(); mapa.fitBounds(paradas.map((p) => [p.lat, p.lon]), { padding: [24, 24] }); }; ajustar(); setTimeout(ajustar, 500);

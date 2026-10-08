@@ -360,13 +360,14 @@ function formLugar(l, cb, opts = {}) {
     const estado = () => { const la = $('#la', m).value, lo = $('#lo', m).value; $('#lst', m).textContent = la !== '' && lo !== '' ? `✔ Ubicación lista: ${(+la).toFixed(5)}, ${(+lo).toFixed(5)}` : ''; };
     const poner = (la, lo, mover = true) => { $('#la', m).value = (+la).toFixed(6); $('#lo', m).value = (+lo).toFixed(6); estado(); if (map) { mk ? mk.setLatLng([la, lo]) : (mk = L.marker([la, lo]).addTo(map)); if (mover) map.setView([la, lo], 16); } };
     estado(); $('#no', m).onclick = close;
-    $('#enl', m).oninput = () => { const c = parseCoords($('#enl', m).value); if (c) { poner(c[0], c[1]); $('#enlh', m).textContent = '✔ Coordenadas leídas del enlace.'; } else if (/goo\.gl|maps\.app/.test($('#enl', m).value)) $('#enlh', m).textContent = '⚠ Ese es un enlace corto. Ábralo en el navegador y copie el enlace largo, o pegue las coordenadas.'; };
+    if ($('#la', m).value !== '' && $('#lo', m).value !== '') setTimeout(() => $('#mp', m).click(), 30);
+    $('#enl', m).oninput = () => { const c = parseCoords($('#enl', m).value); if (c) { if (!map) $('#mp', m).click(); poner(c[0], c[1]); $('#enlh', m).textContent = '✔ Coordenadas leídas del enlace.'; } else if (/goo\.gl|maps\.app/.test($('#enl', m).value)) $('#enlh', m).textContent = '⚠ Ese es un enlace corto. Ábralo en el navegador y copie el enlace largo, o pegue las coordenadas.'; };
     $('#gm', m).onclick = () => abrirExterno('https://www.google.com/maps/search/' + encodeURIComponent($('#n', m).value || ''));
     $('#gps', m).onclick = () => { if (!navigator.geolocation) return toast('Sin acceso a la ubicación'); navigator.geolocation.getCurrentPosition((p) => poner(p.coords.latitude, p.coords.longitude), (e) => toast('No se pudo obtener la ubicación: ' + e.message), { enableHighAccuracy: true, timeout: 15000 }); };
     $('#mp', m).onclick = () => {
       $('#mapbox', m).hidden = false;
       if (!map) { const la = +$('#la', m).value, lo = +$('#lo', m).value, ok = $('#la', m).value !== '' && Number.isFinite(la);
-        map = L.map('lm').setView(ok ? [la, lo] : [-17.78, -63.18], ok ? 16 : 11); L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(map);
+        map = crearMapa('lm', ok ? [la, lo] : [-17.78, -63.18], ok ? 16 : 11);
         if (ok) mk = L.marker([la, lo]).addTo(map); map.on('click', (e) => poner(e.latlng.lat, e.latlng.lng, false)); }
       setTimeout(() => map.invalidateSize(), 80);
     };
@@ -457,7 +458,8 @@ async function planView(m) {
     const err = validar(m, [['#nv', 'Elija el vehículo (o cree uno nuevo)'], ['#nc', 'Elija el chofer (o cree uno nuevo)']]); if (err) return ($('#ce').textContent = err);
     try { const r = await api('POST', '/itinerarios', { fecha, vehiculo_id: $('#nv').value, chofer_id: $('#nc').value }); state.itinId = r.id; state.preVeh = state.preCho = null; toast('✅ Itinerario creado. Ahora agregue las paradas.'); render(); } catch (e) { $('#ce').textContent = e.message; }
   };
-  if (it) itinEditor($('#itbox'), it, ubs, pend, edit);
+  const ej = it && it.bloqueado ? await api('GET', '/ejecucion/' + it.id).catch(() => null) : null;
+  if (it) itinEditor($('#itbox'), it, ubs, pend, edit, ej);
 }
 
 function formChofer(transp, cb) {
@@ -476,16 +478,95 @@ function formChofer(transp, cb) {
   });
 }
 
-function itinEditor(box, it, ubs, pend, edit) {
+// ===== Mapas: carga rápida (mosaicos por CDN, caché en el dispositivo y reemplazo si un proveedor falla) =====
+const TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', TILE_RESPALDO = 'https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png';
+function crearMapa(el, centro = [-17.78, -63.18], zoom = 11) {   // los mosaicos vistos se guardan en el dispositivo (sw.js): la 2.ª vez cargan al instante
+  const mapa = L.map(el, { preferCanvas: true, fadeAnimation: false }).setView(centro, zoom);
+  const opc = { maxZoom: 19, crossOrigin: true, updateWhenIdle: false, keepBuffer: 4, attribution: '© OpenStreetMap' };
+  let cap = L.tileLayer(TILE_URL, opc).addTo(mapa), errores = 0;
+  cap.on('tileerror', () => { if (++errores === 4) { mapa.removeLayer(cap); cap = L.tileLayer(TILE_RESPALDO, { ...opc, subdomains: 'abc' }).addTo(mapa); } });
+  return mapa;
+}
+const pinIcono = (txt, cls = '') => L.divIcon({ html: `<div class="pin ${cls}">${txt}</div>`, className: '', iconSize: [30, 30], iconAnchor: [15, 15] });
+
+// ===== Tiempo y tipos de actividad (tabla de ruteo) =====
+const durTxt = (min) => `${String(Math.floor(Math.max(0, min) / 60)).padStart(2, '0')}:${String(Math.max(0, min) % 60).padStart(2, '0')}`;
+const parseDur = (t) => { t = String(t ?? '').trim(); let m = /^(\d{1,2}):(\d{2})$/.exec(t); if (m) return +m[1] * 60 + +m[2]; m = /^(\d+(?:[.,]\d+)?)\s*h$/i.exec(t); if (m) return Math.round(parseFloat(m[1].replace(',', '.')) * 60); m = /^(\d+)\s*(?:min)?$/i.exec(t); return m ? +m[1] : null; };
+const RT = [['VIAJE', '🚚 Viaje'], ['CARGA', '⬆️ Cargar'], ['DESCARGA', '⬇️ Descargar (kg)'], ['DESCARGA_TOTAL', '⬇️ Descargar todo'], ['ESPERA', '🍽️ Almuerzo / pausa'], ['OTRO', '📌 Otra tarea'], ['ENTREGA_VEHICULO', '🏁 Entregar vehículo']];
+const rtDe = (a) => (['VIAJE', 'ENTREGA_VEHICULO', 'ESPERA'].includes(a.tipo) ? a.tipo : a.carga_tipo === 'DESCARGA_TOTAL' ? 'DESCARGA_TOTAL' : a.carga_tipo === 'DESCARGA' || (!a.carga_tipo && a.peso_kg < 0) ? 'DESCARGA' : a.carga_tipo === 'CARGA' || (!a.carga_tipo && a.peso_kg > 0) ? 'CARGA' : 'OTRO');
+const aplicarRt = (a, rt) => { const m = { VIAJE: ['VIAJE', 'SOLO_VIAJE'], ENTREGA_VEHICULO: ['ENTREGA_VEHICULO', 'SOLO_VIAJE'], ESPERA: ['ESPERA', 'SOLO_VIAJE'], OTRO: ['OTRO', 'SOLO_VIAJE'], CARGA: ['CARGA', 'CARGA'], DESCARGA: ['DESCARGA', 'DESCARGA'], DESCARGA_TOTAL: ['DESCARGA', 'DESCARGA_TOTAL'] }[rt]; a.tipo = m[0]; a.carga_tipo = m[1]; };
+
+// ===== Pegar desde Excel: reconoce qué hace cada fila y en qué lugar =====
+const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+const PALABRAS_GENERICAS = new Set(['planta', 'almacen', 'plan', 'parque', 'industrial', 'centro', 'deposito', 'oficina', 'cliente', 'proveedor', 'distribuidor', 'calle', 'avenida', 'zona', 'santa', 'cruz', 'sierra', 'rumbo']);
+function aliasesDe(u) {
+  const out = new Set(), n = norm(u.nombre); if (n) out.add(n);
+  for (const m of String(u.nombre).matchAll(/\(([^)]+)\)/g)) { const p = norm(m[1]); if (p) out.add(p); }
+  for (const t of norm(String(u.nombre).replace(/\([^)]*\)/g, ' ')).split(' ')) if (t.length >= 4 && !PALABRAS_GENERICAS.has(t) && !/^\d/.test(t)) out.add(t);
+  const tk = norm(String(u.nombre).replace(/\([^)]*\)/g, ' ')).split(' ');
+  for (let i = 0; i + 1 < tk.length; i++) if (tk[i].length + tk[i + 1].length >= 6 && !(PALABRAS_GENERICAS.has(tk[i]) && PALABRAS_GENERICAS.has(tk[i + 1]))) out.add(tk[i] + ' ' + tk[i + 1]);
+  const anillo = /\d+\w*\s+anillo/.exec(n); if (anillo) out.add(anillo[0]);
+  if (u.codigo && norm(u.codigo).length >= 3) out.add(norm(u.codigo));
+  return [...out];
+}
+function buscarLugar(texto, lugares) {
+  const t = ' ' + norm(texto) + ' '; let mejor = null;
+  for (const u of lugares) for (const al of aliasesDe(u)) { const i = t.lastIndexOf(' ' + al + ' '); if (i >= 0 && (!mejor || al.length > mejor.al.length || (al.length === mejor.al.length && i > mejor.i))) mejor = { u, al, i }; }
+  return mejor;
+}
+function clasificarTexto(texto, pos, lugares) {
+  const t = norm(texto), orig = String(texto).toLowerCase().replace(/(\d),(\d)/g, '$1.$2');
+  let kgv = 0; const mt = /(\d+(?:\.\d+)?)\s*(?:ton(?:eladas?)?|tn|t)\b/.exec(orig), mk = /(\d+(?:\.\d+)?)\s*kg\b/.exec(orig);
+  if (mt) kgv = Math.round(parseFloat(mt[1]) * 1000); else if (mk) kgv = Math.round(parseFloat(mk[1]));
+  const hay = (re) => re.test(t), f = buscarLugar(texto, lugares), fid = f?.u.id || null;
+  const enExplicito = f && (new RegExp('\\ben ' + f.al.replace(/ /g, ' ') + '\\b').test(t) || /\([^)]*\)/.test(String(texto)) && norm(String(texto).match(/\(([^)]*)\)/)?.[1]).includes(f.al));
+  const aqui = (pos && !enExplicito) ? pos : (fid || pos || null);
+  const op = (rt, lugar, mag = 0) => ({ rt, origen: lugar, destino: lugar, mag, actividad: String(texto).trim() });
+  if (hay(/\b(almuerzo|descanso|refrigerio|pausa|espera)\b/)) return [op('ESPERA', pos || fid)];
+  if (hay(/entreg\w* (de |del )?(el )?vehiculo/)) return [{ rt: 'ENTREGA_VEHICULO', origen: pos, destino: fid || pos, mag: 0, actividad: String(texto).trim() }];
+  const desc = hay(/\b(descarga|descargar|descargue)\b/), carg = hay(/\b(carguio|carga|cargar|recojo|recoger|recoleccion)\b/);
+  if (desc && carg) return [op('DESCARGA_TOTAL', aqui, 0), op('CARGA', aqui, kgv)].map((p, i) => ({ ...p, actividad: String(texto).trim() + (i ? ' (carga)' : ' (descarga)') }));
+  if (hay(/\b(rumbo|viaje|traslado|retorno|ir a|dirigirse)\b/)) return [{ rt: 'VIAJE', origen: pos, destino: fid || null, mag: 0, actividad: String(texto).trim() }];
+  if (desc) return [op(kgv ? 'DESCARGA' : 'DESCARGA_TOTAL', aqui, kgv)];
+  if (hay(/\b(entrega|entregar)\b/) && !hay(/vehiculo/)) return [op(kgv ? 'DESCARGA' : 'DESCARGA_TOTAL', aqui, kgv)];
+  if (carg) return [op('CARGA', aqui, kgv)];
+  return [op('OTRO', pos || fid)];
+}
+function analizarExcel(texto, lugares, posIni) {
+  const filas = [], HORA = /^\d{1,2}:\d{2}(:\d{2})?$/;
+  for (const linea of String(texto).split(/\r?\n/)) {
+    const celdas = linea.split('\t').map((c) => c.trim()), horas = celdas.filter((c) => HORA.test(c)).map((c) => c.slice(0, 5).replace(/^(\d):/, '0$1:'));
+    if (horas.length < 2) continue;   // títulos, encabezados y filas vacías
+    const txt = celdas.filter((c) => c && !HORA.test(c) && !/^\d+$/.test(c)).sort((a, b) => b.length - a.length)[0] || '';
+    let ini = horas[0], fin = horas[1]; if (hm(fin) < hm(ini) && horas.length === 2) fin = fmt(hm(ini) + hm(fin));   // el segundo dato era la duración
+    if (hm(fin) > hm(ini)) filas.push({ ini, fin, txt });
+  }
+  let pos = posIni; const out = [];
+  for (const f of filas) {
+    const partes = clasificarTexto(f.txt, pos, lugares), total = hm(f.fin) - hm(f.ini);
+    partes.forEach((p, k) => {
+      const ini = k === 0 ? f.ini : out[out.length - 1].hora_fin_plan, fin = k === partes.length - 1 ? f.fin : fmt(hm(ini) + Math.max(5, Math.round(total / partes.length)));
+      const a = { actividad: p.actividad, comentarios: '', hora_inicio_plan: ini, hora_fin_plan: fin, origen_ubicacion_id: p.origen || null, destino_ubicacion_id: p.destino || null, mag: p.mag || 0, peso_kg: 0 }; aplicarRt(a, p.rt); out.push(a);
+      if (a.destino_ubicacion_id) pos = a.destino_ubicacion_id;
+    });
+  }
+  return out;
+}
+
+function itinEditor(box, it, ubs, pend, edit, ej) {
   let acts = it.actividades.map((a) => ({ ...a, mag: Math.abs(a.peso_kg || 0) })), lugares = ubs.slice(), horaSalida = acts[0]?.hora_inicio_plan || '07:00';
+  let vista = state.vistaPlan || (window.innerWidth < 760 ? 'paradas' : 'tabla'), cadena = state.cadena ?? true;
   const lug = (id) => lugares.find((u) => u.id === id), nom = (id) => lug(id)?.nombre || '— sin lugar —';
   const tipoCarga = (a) => a.carga_tipo || (a.peso_kg > 0 ? 'CARGA' : a.peso_kg < 0 ? 'DESCARGA' : 'SOLO_VIAJE');
   const esViaje = (a) => ['VIAJE', 'ENTREGA_VEHICULO'].includes(a.tipo);
   const minutos = (a) => Math.max(0, (hm(a.hora_fin_plan) ?? 0) - (hm(a.hora_inicio_plan) ?? 0));
-  const distKm = (o, d) => { const a = lug(o), b = lug(d); if (!a?.lat || !b?.lat || o === d) return 0; const r = (x) => (x * Math.PI) / 180, h = Math.sin(r(b.lat - a.lat) / 2) ** 2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(r(b.lon - a.lon) / 2) ** 2; return 12742 * Math.asin(Math.sqrt(h)) * 1.3; };
-  const minViaje = (o, d) => Math.max(10, Math.round(((distKm(o, d) / 30) * 60) / 5) * 5);
-  function recalcular() {   // el peso con signo sale del tipo (cargar / descargar / descargar todo) y se encadena lo que lleva a bordo
-    let c = 0;
+  const kmEntre = (o, d) => { const a = lug(o), b = lug(d); if (a?.lat == null || b?.lat == null || o === d) return 0; const r = (x) => (x * Math.PI) / 180, h = Math.sin(r(b.lat - a.lat) / 2) ** 2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(r(b.lon - a.lon) / 2) ** 2; return 12742 * Math.asin(Math.sqrt(h)) * 1.3; };
+  const minViaje = (o, d) => Math.max(10, Math.round(((kmEntre(o, d) / 30) * 60) / 5) * 5);
+  function normalizar() {   // el vehículo continúa desde donde quedó: el origen de un viaje es el destino de la fila anterior
+    acts.forEach((a, i) => { if (esViaje(a)) { if (i > 0 && acts[i - 1].destino_ubicacion_id) a.origen_ubicacion_id = acts[i - 1].destino_ubicacion_id; } else a.origen_ubicacion_id = a.destino_ubicacion_id; });
+  }
+  function recalcular() {
+    normalizar(); let c = 0;
     acts.forEach((a) => {
       a.carga_tipo = tipoCarga(a); const mag = Math.abs(Number(a.mag) || 0);
       a.peso_kg = a.carga_tipo === 'CARGA' ? mag : a.carga_tipo === 'DESCARGA' ? -mag : a.carga_tipo === 'DESCARGA_TOTAL' ? -Math.max(0, c) : 0;
@@ -493,28 +574,29 @@ function itinEditor(box, it, ubs, pend, edit) {
       c += a.peso_kg; a._abordo = c;
     });
   }
-  const encadenar = (desde) => { for (let i = Math.max(desde, 1); i < acts.length; i++) { const d = minutos(acts[i]), p = hm(acts[i - 1].hora_fin_plan); if (p == null) break; acts[i].hora_inicio_plan = fmt(p); acts[i].hora_fin_plan = fmt(p + d); } };
+  const encadenar = (desde) => { if (!cadena) return; for (let i = Math.max(desde, 1); i < acts.length; i++) { const d = minutos(acts[i]), p = hm(acts[i - 1].hora_fin_plan); if (p == null) break; acts[i].hora_inicio_plan = fmt(Math.min(p, 1439)); acts[i].hora_fin_plan = fmt(Math.min(p + d, 1439)); } };
   const posActual = () => acts.length ? acts[acts.length - 1].destino_ubicacion_id : null;
-  const nuevaAct = (tipo, o, d, ct, mag, texto, ini, min, extra = {}) => ({ tipo, actividad: texto, carga_tipo: ct, mag, peso_kg: 0, origen_ubicacion_id: o, destino_ubicacion_id: d, hora_inicio_plan: ini, hora_fin_plan: fmt((hm(ini) ?? 0) + min), comentarios: '', ...extra });
+  const nuevaAct = (tipo, o, d, ct, mag, texto, ini, min, extra = {}) => ({ tipo, actividad: texto, carga_tipo: ct, mag, peso_kg: 0, origen_ubicacion_id: o, destino_ubicacion_id: d, hora_inicio_plan: ini, hora_fin_plan: fmt(Math.min((hm(ini) ?? 0) + min, 1439)), comentarios: '', ...extra });
   const finActual = () => (acts.length ? acts[acts.length - 1].hora_fin_plan : horaSalida);
-  const agregarViaje = (o, d) => { if (o && d && o !== d) { const ini = finActual(); acts.push(nuevaAct('VIAJE', o, d, 'SOLO_VIAJE', 0, `Viaje a ${nom(d)}`, ini, minViaje(o, d))); } };
+  const agregarViaje = (o, d) => { if (o && d && o !== d) acts.push(nuevaAct('VIAJE', o, d, 'SOLO_VIAJE', 0, `Viaje a ${nom(d)}`, finActual(), minViaje(o, d))); };
+  const faltaLugar = (a) => { const l = lug(a.destino_ubicacion_id), o = lug(a.origen_ubicacion_id); return !l || l.lat == null || !o || o.lat == null; };
 
   const selLugar = (id, val, extraOpt = '— Elija un lugar —') => `<div class="lugar-sel"><select id="${id}" data-lugar>${opts(lugares, val, (u) => u.id, (u) => u.nombre + (u.lat == null ? '  (⚠ sin ubicar)' : ''), extraOpt)}</select><button type="button" class="btn sm" data-nuevolugar="${id}">＋ Nuevo lugar (Google Maps)</button></div>`;
   async function recargarLugares() { lugares = await api('GET', '/ubicaciones'); }
-  function enlazarLugares(m) {   // el botón "Nuevo lugar" guarda el lugar (con su punto de Google Maps) y lo deja elegido
+  function enlazarLugares(m) {
     m.querySelectorAll('[data-nuevolugar]').forEach((b) => (b.onclick = () => formLugar(null, async (nuevoId) => {
       await recargarLugares();
       m.querySelectorAll('select[data-lugar]').forEach((s) => { const v = s.id === b.dataset.nuevolugar ? nuevoId : s.value; s.innerHTML = opts(lugares, v, (u) => u.id, (u) => u.nombre + (u.lat == null ? '  (⚠ sin ubicar)' : ''), '— Elija un lugar —'); });
     })));
   }
-  async function asegurarLugar(s, pre) {   // un pedido solo trae dirección o GPS: se guarda como lugar para poder planificar
+  async function asegurarLugar(s, pre) {
     if (s[pre + '_ubicacion_id']) return s[pre + '_ubicacion_id'];
     const nombre = s[pre + '_direccion'] || `Punto ${pre === 'origen' ? 'de recojo' : 'de entrega'} del pedido #${s.numero}`;
     if (s[pre + '_lat'] != null) { const r = await api('POST', '/ubicaciones', { nombre, tipo: 'OTRO', direccion: s[pre + '_direccion'] || null, lat: s[pre + '_lat'], lon: s[pre + '_lon'] }); await recargarLugares(); return r.id; }
     return new Promise((res) => { toast(`El pedido #${s.numero} no tiene punto en el mapa: ubíquelo con Google Maps`); formLugar({ nombre, direccion: s[pre + '_direccion'] || '', tipo: 'OTRO', radio_geocerca_m: 150 }, async (id) => { await recargarLugares(); res(id); }, { exigirMapa: true, onCancel: () => res(null) }); });
   }
 
-  // ----- agregar paradas -----
+  // ----- agregar paradas (asistente) -----
   function elegirParada() {
     const libres = pend.filter((s) => !acts.some((a) => a.solicitud_id === s.id));
     ventana('¿Qué va a hacer el vehículo?', `<p class="mut sm" style="margin:0 0 8px">Elija una opción. El sistema agrega el viaje y calcula los horarios.</p><div class="grid">
@@ -522,34 +604,32 @@ function itinEditor(box, it, ubs, pend, edit) {
       <button class="tile teal" data-k="descarga"><span class="i">⬇️</span><div><b>Descargar</b><span>Entregar mercadería en un lugar</span></div></button>
       <button class="tile purple" data-k="pedidos"><span class="i">🧾</span><div><b>Llevar pedidos aprobados</b><span>${libres.length ? libres.length + ' pedido(s) esperando' : 'No hay pedidos esperando'}</span></div></button>
       <button class="tile orange" data-k="viaje"><span class="i">🚚</span><div><b>Solo ir a un lugar</b><span>Viaje sin cargar ni descargar</span></div></button>
+      <button class="tile rose" data-k="pausa"><span class="i">🍽️</span><div><b>Almuerzo / pausa</b><span>Tiempo sin operar</span></div></button>
       <button class="tile slate" data-k="fin"><span class="i">🏁</span><div><b>Entregar el vehículo</b><span>Fin del recorrido</span></div></button></div>`, (m, close) => m.querySelectorAll('[data-k]').forEach((b) => (b.onclick = () => { close(); b.dataset.k === 'pedidos' ? elegirPedidos() : formParada(b.dataset.k); })));
   }
   function formParada(k) {
-    const cur = posActual(), titulo = { carga: '⬆️ Cargar', descarga: '⬇️ Descargar', viaje: '🚚 Solo ir a un lugar', fin: '🏁 Entregar el vehículo' }[k];
+    const cur = posActual(), titulo = { carga: '⬆️ Cargar', descarga: '⬇️ Descargar', viaje: '🚚 Solo ir a un lugar', pausa: '🍽️ Almuerzo / pausa', fin: '🏁 Entregar el vehículo' }[k];
     const aBordo = acts.length ? acts[acts.length - 1]._abordo : 0;
     ventana(titulo, `${cur ? `<div class="how" style="margin-top:4px">El vehículo está ahora en <b>${esc(nom(cur))}</b> y lleva <b>${kg(aBordo)}</b>.</div>` : seccion('📍', '¿Desde dónde sale el vehículo?', 'Punto de partida', selLugar('ps', state.ultimoPartida || ''))}
-      ${seccion(k === 'fin' ? '🏁' : '📍', k === 'carga' ? '¿Dónde carga?' : k === 'descarga' ? '¿Dónde descarga?' : k === 'fin' ? '¿Dónde deja el vehículo?' : '¿A qué lugar va?', 'Elija un lugar o agréguelo con su punto de Google Maps', selLugar('pl', ''))}
+      ${k === 'pausa' ? '' : seccion(k === 'fin' ? '🏁' : '📍', k === 'carga' ? '¿Dónde carga?' : k === 'descarga' ? '¿Dónde descarga?' : k === 'fin' ? '¿Dónde deja el vehículo?' : '¿A qué lugar va?', 'Elija un lugar o agréguelo con su punto de Google Maps', selLugar('pl', cur && ['carga', 'descarga'].includes(k) ? cur : ''))}
       ${k === 'carga' ? seccion('⚖️', '¿Qué carga?', '', `<label>Material</label><input id="ma" placeholder="Ej.: Envases PEAD"><label class="req">Peso (kg)</label><input id="pe" type="number" min="0" step="any" inputmode="decimal"><div class="hint">Capacidad del vehículo: ${kg(it.capacidad_kg)}${aBordo ? ` · ya lleva ${kg(aBordo)}` : ''}</div>`) : ''}
       ${k === 'descarga' ? seccion('⚖️', '¿Cuánto descarga?', '', `<div class="seg"><label><input type="radio" name="dq" value="TODO" checked><span>Todo lo que lleva<small>${kg(aBordo)}</small></span></label><label><input type="radio" name="dq" value="PARTE"><span>Una cantidad<small>indicar kg</small></span></label></div><div id="dparte" hidden><label class="req">Peso a descargar (kg)</label><input id="pe" type="number" min="0" step="any" inputmode="decimal"></div><label>Material</label><input id="ma" placeholder="Opcional">`) : ''}
-      ${k === 'carga' || k === 'descarga' ? seccion('⏱️', '¿Cuánto tiempo toma?', '', `<label>Minutos en el lugar</label><input id="mn" type="number" min="5" step="5" value="30">`) : ''}
+      ${['carga', 'descarga', 'pausa'].includes(k) ? seccion('⏱️', '¿Cuánto tiempo toma?', '', `<label>Duración (hh:mm o minutos)</label><input id="mn" value="${k === 'pausa' ? '01:00' : '00:30'}" placeholder="00:30">`) : ''}
       <div class="err" id="er"></div><div class="bar"><button class="btn" id="no">Cancelar</button><button class="btn pri lg" id="ok">Agregar al itinerario</button></div>`, (m, close) => {
       enlazarLugares(m); $('#no', m).onclick = close;
       m.querySelectorAll('input[name=dq]').forEach((r) => (r.onchange = () => ($('#dparte', m).hidden = m.querySelector('input[name=dq]:checked').value !== 'PARTE')));
       $('#ok', m).onclick = () => {
-        const reglas = [...(cur ? [] : [['#ps', 'Elija desde dónde sale el vehículo']]), ['#pl', 'Elija el lugar']]; let err = validar(m, reglas);
+        const reglas = [...(cur ? [] : [['#ps', 'Elija desde dónde sale el vehículo']]), ...(k === 'pausa' ? [] : [['#pl', 'Elija el lugar']])]; let err = validar(m, reglas);
         const modo = k === 'descarga' ? m.querySelector('input[name=dq]:checked').value : null;
         if (!err && (k === 'carga' || modo === 'PARTE') && !(+$('#pe', m).value > 0)) { $('#pe', m).classList.add('invalid'); err = 'Indique el peso en kg'; }
         if (err) return ($('#er', m).textContent = err);
-        const lugar = $('#pl', m).value, origen = cur || $('#ps', m).value; if (!cur) state.ultimoPartida = origen;
-        const min = Math.max(5, +$('#mn', m)?.value || 30), mat = $('#ma', m)?.value.trim();
+        const origen = cur || $('#ps', m).value, lugar = k === 'pausa' ? origen : $('#pl', m).value; if (!cur) state.ultimoPartida = origen;
         if (k === 'viaje' && origen === lugar) return ($('#er', m).textContent = 'El vehículo ya está en ese lugar. Elija otro destino.');
-        const antes = acts.length; agregarViaje(origen, lugar);
+        const min = Math.max(5, parseDur($('#mn', m)?.value) ?? 30), mat = $('#ma', m)?.value.trim(), antes = acts.length; agregarViaje(origen, lugar);
         if (k === 'carga') acts.push(nuevaAct('CARGA', lugar, lugar, 'CARGA', +$('#pe', m).value, `Cargar${mat ? ' ' + mat : ''} en ${nom(lugar)}`, finActual(), min));
         else if (k === 'descarga') acts.push(nuevaAct('DESCARGA', lugar, lugar, modo === 'TODO' ? 'DESCARGA_TOTAL' : 'DESCARGA', modo === 'TODO' ? 0 : +$('#pe', m).value, `Descargar${mat ? ' ' + mat : ''} en ${nom(lugar)}`, finActual(), min));
-        else if (k === 'fin') {
-          if (acts.length > antes) { const v = acts[acts.length - 1]; v.tipo = 'ENTREGA_VEHICULO'; v.actividad = `Entregar el vehículo en ${nom(lugar)}`; }
-          else acts.push(nuevaAct('ENTREGA_VEHICULO', lugar, lugar, 'SOLO_VIAJE', 0, `Entregar el vehículo en ${nom(lugar)}`, finActual(), 10));
-        }
+        else if (k === 'pausa') acts.push(nuevaAct('ESPERA', lugar, lugar, 'SOLO_VIAJE', 0, 'Almuerzo / pausa', finActual(), min));
+        else if (k === 'fin') { if (acts.length > antes) { const v = acts[acts.length - 1]; v.tipo = 'ENTREGA_VEHICULO'; v.actividad = `Entregar el vehículo en ${nom(lugar)}`; } else acts.push(nuevaAct('ENTREGA_VEHICULO', lugar, lugar, 'SOLO_VIAJE', 0, `Entregar el vehículo en ${nom(lugar)}`, finActual(), 10)); }
         close(); recalcular(); draw({ ok: 'Parada agregada.' });
       };
     });
@@ -574,7 +654,7 @@ function itinEditor(box, it, ubs, pend, edit) {
           for (const s of marcados) {
             const o = await asegurarLugar(s, 'origen'), d = await asegurarLugar(s, 'destino');
             if (!o || !d) { $('#er', m).textContent = `Falta ubicar el pedido #${s.numero}.`; $('#ok', m).disabled = false; return; }
-            if (pos !== o) { acts.push(nuevaAct('VIAJE', pos, o, 'SOLO_VIAJE', 0, `Viaje a ${nom(o)}`, finActual(), minViaje(pos, o))); }
+            if (pos !== o) acts.push(nuevaAct('VIAJE', pos, o, 'SOLO_VIAJE', 0, `Viaje a ${nom(o)}`, finActual(), minViaje(pos, o)));
             acts.push(nuevaAct('RECOJO', o, o, 'CARGA', +s.peso_kg || 0, `Cargar pedido #${s.numero}: ${s.material || s.descripcion || ''}`.trim(), finActual(), 30, { solicitud_id: s.id, prioridad: s.prioridad, tipo_logistica: s.tipo_logistica, comentarios: `Pedido #${s.numero}` }));
             acts.push(nuevaAct('VIAJE', o, d, 'SOLO_VIAJE', 0, `Viaje a ${nom(d)}`, finActual(), minViaje(o, d)));
             acts.push(nuevaAct('ENTREGA', d, d, 'DESCARGA', +s.peso_kg || 0, `Entregar pedido #${s.numero}`, finActual(), 30, { solicitud_id: s.id, prioridad: s.prioridad, tipo_logistica: s.tipo_logistica, comentarios: `Pedido #${s.numero}` }));
@@ -587,53 +667,133 @@ function itinEditor(box, it, ubs, pend, edit) {
   }
   function editarParada(i) {
     const a = acts[i], viaje = esViaje(a), ct = tipoCarga(a);
-    ventana(`Editar parada ${i + 1}`, `${viaje ? `<label class="req">Sale de</label>${selLugar('eo', a.origen_ubicacion_id)}<label class="req">Va a</label>${selLugar('ed', a.destino_ubicacion_id)}` : `<label class="req">Lugar</label>${selLugar('ed', a.destino_ubicacion_id)}
+    ventana(`Editar parada ${i + 1}`, `${viaje ? `<label class="req">Va a</label>${selLugar('ed', a.destino_ubicacion_id)}` : `<label class="req">Lugar</label>${selLugar('ed', a.destino_ubicacion_id)}
       <label>¿Qué hace el vehículo aquí?</label><select id="ct">${Object.entries(CARGA_TXT).map(([k, t]) => `<option value="${k}" ${k === ct ? 'selected' : ''}>${t}</option>`).join('')}</select><div id="cq" ${['CARGA', 'DESCARGA'].includes(ct) ? '' : 'hidden'}><label class="req">Peso (kg)</label><input id="pe" type="number" min="0" step="any" value="${esc(a.mag || '')}" inputmode="decimal"></div>`}
-      <label>Descripción</label><input id="de" value="${esc(a.actividad)}"><div class="grid2"><div><label>Hora de inicio</label><input id="hi" type="time" value="${esc(a.hora_inicio_plan)}"></div><div><label>Duración (minutos)</label><input id="du" type="number" min="5" step="5" value="${minutos(a)}"></div></div>
+      <label>Descripción</label><input id="de" value="${esc(a.actividad)}"><div class="grid2"><div><label>Hora de inicio</label><input id="hi" type="time" value="${esc(a.hora_inicio_plan)}"></div><div><label>Duración (hh:mm)</label><input id="du" value="${durTxt(minutos(a))}"></div></div>
       <label>Comentario para el chofer</label><input id="co" value="${esc(a.comentarios || '')}"><div class="err" id="er"></div><div class="bar"><button class="btn" id="no">Cancelar</button><button class="btn pri lg" id="ok">Guardar cambios</button></div>`, (m, close) => {
       enlazarLugares(m); $('#no', m).onclick = close;
       if ($('#ct', m)) $('#ct', m).onchange = () => ($('#cq', m).hidden = !['CARGA', 'DESCARGA'].includes($('#ct', m).value));
       $('#ok', m).onclick = () => {
-        const err = validar(m, [['#ed', 'Elija el lugar'], ...(viaje ? [['#eo', 'Elija desde dónde sale']] : [])]); if (err) return ($('#er', m).textContent = err);
-        if (viaje) a.origen_ubicacion_id = $('#eo', m).value; else { a.origen_ubicacion_id = $('#ed', m).value; a.carga_tipo = $('#ct', m).value; a.mag = +$('#pe', m).value || 0; }
+        const err = validar(m, [['#ed', 'Elija el lugar']]); if (err) return ($('#er', m).textContent = err);
+        if (!viaje) { a.carga_tipo = $('#ct', m).value; a.mag = +$('#pe', m).value || 0; }
         a.destino_ubicacion_id = $('#ed', m).value; a.actividad = $('#de', m).value.trim() || a.actividad; a.comentarios = $('#co', m).value;
-        const min = Math.max(5, +$('#du', m).value || 30); a.hora_inicio_plan = $('#hi', m).value || a.hora_inicio_plan; a.hora_fin_plan = fmt((hm(a.hora_inicio_plan) ?? 0) + min);
+        const min = Math.max(5, parseDur($('#du', m).value) ?? 30); a.hora_inicio_plan = $('#hi', m).value || a.hora_inicio_plan; a.hora_fin_plan = fmt(Math.min((hm(a.hora_inicio_plan) ?? 0) + min, 1439));
         encadenar(i + 1); close(); recalcular(); draw();
       };
     });
   }
 
+  // ----- herramientas: pegar desde Excel, copiar otro día, ruta en mapa -----
+  function pegarExcel() {
+    ventana('📥 Pegar desde Excel', `<p class="mut sm" style="margin:0 0 6px">Copie las filas de su Excel (columnas: <b>N, Inicio, Fin, Duración, Comentarios</b>) y péguelas aquí. El sistema reconoce qué hace cada fila (viaje, carguío, descarga, almuerzo…) y el lugar por su nombre.</p>
+      <textarea id="tx" rows="9" placeholder="1&#9;08:00&#9;08:15&#9;00:15&#9;Llegada, validación vehículo y salida al pilat&#10;2&#9;08:15&#9;08:35&#9;00:20&#9;Recojo botellas de pet 1L&#10;3&#9;08:35&#9;09:10&#9;00:35&#9;Rumbo pilat"></textarea>
+      ${acts.length ? '<label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="rep" checked> Reemplazar las filas actuales</label>' : ''}<div id="vp"></div><div class="err" id="er"></div>
+      <div class="bar"><button class="btn" id="no">Cancelar</button><button class="btn" id="an">🔍 Analizar</button><button class="btn pri lg" id="ok">Importar a la tabla</button></div>`, (m, close) => {
+      $('#no', m).onclick = close;
+      const analizar = () => {
+        const pos0 = acts.length && !$('#rep', m)?.checked ? posActual() : null, r = analizarExcel($('#tx', m).value, lugares, pos0);
+        if (!r.length) { $('#vp', m).innerHTML = ''; $('#er', m).textContent = 'No encontré filas con hora de inicio y fin. Copie desde Excel las columnas Inicio y Fin (y el comentario).'; return null; }
+        $('#er', m).textContent = ''; $('#vp', m).innerHTML = `<div class="scroll"><table><tr><th>Inicio</th><th>Fin</th><th>Qué hace</th><th>Lugar</th><th>Kg</th><th>Texto</th></tr>${r.map((a) => `<tr class="${!a.destino_ubicacion_id ? 'over' : ''}"><td>${a.hora_inicio_plan}</td><td>${a.hora_fin_plan}</td><td>${esc((RT.find((x) => x[0] === rtDe(a)) || [0, ''])[1])}</td><td>${a.destino_ubicacion_id ? esc(nom(a.destino_ubicacion_id)) : '<b>⚠ elegir</b>'}</td><td>${a.mag || ''}</td><td class="sm">${esc(a.actividad)}</td></tr>`).join('')}</table></div><div class="hint">Las filas en rojo no tienen lugar: elíjalo en la tabla después de importar.</div>`;
+        return r;
+      };
+      $('#an', m).onclick = analizar;
+      $('#ok', m).onclick = () => { const r = analizar(); if (!r) return; if (!acts.length || $('#rep', m)?.checked) acts = r; else acts.push(...r); close(); recalcular(); horaSalida = acts[0]?.hora_inicio_plan || horaSalida; cadena = false; state.cadena = false; draw({ ok: `${r.length} fila(s) importada(s). Revise los lugares marcados en rojo.` }); };
+    });
+  }
+  async function copiarOtroDia() {
+    const todos = (await api('GET', '/itinerarios')).filter((x) => x.id !== it.id).slice(0, 25);
+    if (!todos.length) return toast('Todavía no hay otros itinerarios para copiar.');
+    ventana('📋 Copiar el itinerario de otro día', `<p class="mut sm" style="margin:0 0 8px">Toque el día que quiere repetir. Se copian paradas, horarios, lugares y cargas (los pedidos no, porque son de cada día).</p>${todos.map((x) => `<button class="item" data-c="${x.id}"><div class="h"><b>${esc(x.fecha)}</b><span>🚚 ${esc(x.vehiculo_codigo)} · ${esc(x.chofer_nombre)}</span><span class="sp"></span>${tag(x.estado)}</div></button>`).join('')}`, (m, close) => m.querySelectorAll('[data-c]').forEach((b) => (b.onclick = async () => {
+      const src = await api('GET', '/itinerarios/' + b.dataset.c); close();
+      acts = src.actividades.map((a) => ({ ...a, id: undefined, solicitud_id: null, comentarios: a.comentarios && /^Pedido #/.test(a.comentarios) ? '' : a.comentarios, mag: Math.abs(a.peso_kg || 0) })); horaSalida = acts[0]?.hora_inicio_plan || horaSalida;
+      await recargarLugares(); recalcular(); draw({ ok: `Copiado de ${src.fecha} (${acts.length} filas). Ajuste lo que cambie y guarde.` });
+    })));
+  }
+  function rutaMapa() {   // borrador de la ruta: puntos numerados en el mapa y enlace a Google Maps antes de aprobar
+    recalcular(); const paradas = [];
+    acts.forEach((a, i) => { const add = (id, hora) => { const l = lug(id); if (!l || l.lat == null) return; const u = paradas[paradas.length - 1]; if (u && u.id === id) { u.filas.push(i + 1); return; } paradas.push({ id, nombre: l.nombre, lat: l.lat, lon: l.lon, hora, filas: [i + 1] }); }; if (i === 0) add(a.origen_ubicacion_id, a.hora_inicio_plan); add(a.destino_ubicacion_id, esViaje(a) ? a.hora_fin_plan : a.hora_inicio_plan); });
+    const sinMapa = [...new Set(acts.filter(faltaLugar).map((a, k) => acts.indexOf(a) + 1))];
+    if (!paradas.length) return toast('Aún no hay lugares ubicados en el mapa para dibujar la ruta.');
+    let km = 0; for (let i = 1; i < paradas.length; i++) km += kmEntre(paradas[i - 1].id, paradas[i].id);
+    const tramos = []; for (let i = 0; i < paradas.length - 1; i += 9) tramos.push(paradas.slice(i, i + 10));
+    const enlace = (t) => `https://www.google.com/maps/dir/?api=1&travelmode=driving&origin=${t[0].lat},${t[0].lon}&destination=${t[t.length - 1].lat},${t[t.length - 1].lon}${t.length > 2 ? '&waypoints=' + encodeURIComponent(t.slice(1, -1).map((p) => `${p.lat},${p.lon}`).join('|')) : ''}`;
+    ventana('🗺️ Ruta del itinerario (borrador)', `<p class="mut" style="margin:0 0 6px">${paradas.length} puntos · unos <b>${km.toFixed(0)} km</b> · ~${Math.max(1, Math.round(km / 30))} h de manejo (estimado)</p>${sinMapa.length ? `<div class="alert">⚠️ Las filas ${sinMapa.join(', ')} no tienen un lugar ubicado en el mapa.</div>` : ''}
+      <div id="rbmap" class="map" style="height:300px"></div>
+      <div class="row">${tramos.map((t, i) => `<button class="btn pri" data-gm="${i}">🧭 Ver en Google Maps${tramos.length > 1 ? ` (tramo ${i + 1}/${tramos.length})` : ''}</button>`).join('')}</div><div class="hint">Google Maps muestra la ruta real por calles; los puntos son los de este itinerario.</div>
+      ${paradas.map((p, i) => `<div class="act"><span class="tag NORMAL">${i + 1}</span> <b>${esc(p.nombre)}</b> <span class="mut">${esc(p.hora || '')} · filas ${p.filas.join(', ')}</span></div>`).join('')}`, (m) => {
+      m.querySelectorAll('[data-gm]').forEach((b) => (b.onclick = () => abrirExterno(enlace(tramos[+b.dataset.gm]))));
+      setTimeout(() => { const mapa = crearMapa('rbmap', [paradas[0].lat, paradas[0].lon], 12); L.polyline(paradas.map((p) => [p.lat, p.lon]), { color: '#2563eb', weight: 4, dashArray: '8 6' }).addTo(mapa); paradas.forEach((p, i) => L.marker([p.lat, p.lon], { icon: pinIcono(i + 1, i === 0 ? 'ok' : i === paradas.length - 1 ? 'now' : '') }).bindPopup(`<b>${i + 1}. ${esc(p.nombre)}</b><br>${esc(p.hora || '')}`).addTo(mapa)); const aj = () => { mapa.invalidateSize(); mapa.fitBounds(paradas.map((p) => [p.lat, p.lon]), { padding: [30, 30], maxZoom: 15 }); }; aj(); setTimeout(aj, 450); }, 60);
+    });
+  }
+
   // ----- dibujo -----
-  const ICONO = { VIAJE: '🚚', CARGA: '⬆️', DESCARGA: '⬇️', RECOJO: '⬆️', ENTREGA: '⬇️', ENTREGA_VEHICULO: '🏁', ESPERA: '⏸️', OTRO: '📌' };
-  const lineaTitulo = (a) => { const ct = tipoCarga(a); if (esViaje(a)) return `${a.tipo === 'ENTREGA_VEHICULO' ? '🏁 Entregar el vehículo' : '🚚 Viaje'}: <b>${esc(nom(a.origen_ubicacion_id))}</b> → <b>${esc(nom(a.destino_ubicacion_id))}</b>`; return `${ct === 'CARGA' ? '⬆️ Cargar' : ct === 'SOLO_VIAJE' ? '⏸️ Parada' : '⬇️ Descargar'}${ct === 'CARGA' || ct === 'DESCARGA' ? ' ' + kg(a.mag) : ct === 'DESCARGA_TOTAL' ? ` todo (${kg(a.mag)})` : ''} en <b>${esc(nom(a.destino_ubicacion_id))}</b>`; };
+  const ICONO = { VIAJE: '🚚', CARGA: '⬆️', DESCARGA: '⬇️', RECOJO: '⬆️', ENTREGA: '⬇️', ENTREGA_VEHICULO: '🏁', ESPERA: '🍽️', OTRO: '📌' };
+  const lineaTitulo = (a) => { const ct = tipoCarga(a); if (esViaje(a)) return `${a.tipo === 'ENTREGA_VEHICULO' ? '🏁 Entregar el vehículo' : '🚚 Viaje'}: <b>${esc(nom(a.origen_ubicacion_id))}</b> → <b>${esc(nom(a.destino_ubicacion_id))}</b>`; if (a.tipo === 'ESPERA') return '🍽️ Almuerzo / pausa'; return `${ct === 'CARGA' ? '⬆️ Cargar' : ct === 'SOLO_VIAJE' ? '📌 Tarea' : '⬇️ Descargar'}${ct === 'CARGA' || ct === 'DESCARGA' ? ' ' + kg(a.mag) : ct === 'DESCARGA_TOTAL' ? ` todo (${kg(a.mag)})` : ''} en <b>${esc(nom(a.destino_ubicacion_id))}</b>`; };
+  const resumenHoras = () => { const por = (f) => acts.filter(f).reduce((t, a) => t + minutos(a), 0), ini = hm(acts[0]?.hora_inicio_plan), fin = hm(acts[acts.length - 1]?.hora_fin_plan); return acts.length && ini != null && fin != null ? `Jornada ${acts[0].hora_inicio_plan}–${acts[acts.length - 1].hora_fin_plan} (${durTxt(fin - ini)} h) · manejo ${durTxt(por(esViaje))} · carga/descarga ${durTxt(por((a) => !esViaje(a) && a.tipo !== 'ESPERA' && a.tipo !== 'OTRO'))} · pausas ${durTxt(por((a) => a.tipo === 'ESPERA'))}` : ''; };
+  const SEM_E = { VERDE: '🟢', AMARILLO: '🟡', ROJO: '🔴' };
+  const real = (i) => ej?.actividades?.[i];
   const draw = (msgs = {}) => {
     recalcular();
-    const pico = Math.max(0, ...acts.map((a) => a._abordo)), cap = it.capacidad_kg, libres = pend.filter((s) => !acts.some((a) => a.solicitud_id === s.id));
-    const tarjeta = (a, i) => { const sobre = a._abordo > cap, pct = Math.max(0, Math.min(100, (100 * a._abordo) / cap)), km = esViaje(a) ? distKm(a.origen_ubicacion_id, a.destino_ubicacion_id) : 0;
-      return `<div class="parada ${sobre ? 'sobre' : ''}"><div class="pl"><b>${esc(a.hora_inicio_plan)}</b><i>${ICONO[a.tipo] || '📌'}</i><span>${minutos(a)} min</span></div>
-        <div class="pc"><div class="pt">${lineaTitulo(a)}</div>${a.actividad && !esViaje(a) && !/^(Cargar|Descargar|Entregar)/.test(a.actividad) ? `<div class="m">${esc(a.actividad)}</div>` : ''}${a.comentarios ? `<div class="m">📝 ${esc(a.comentarios)}</div>` : ''}${a.solicitud_id && !a.comentarios ? '<div class="m">🧾 Pedido incluido</div>' : ''}${km ? `<div class="m">≈ ${km.toFixed(1)} km (estimado)</div>` : ''}
+    const pico = Math.max(0, ...acts.map((a) => a._abordo)), cap = it.capacidad_kg, libres = pend.filter((s) => !acts.some((a) => a.solicitud_id === s.id)), conReal = !!ej?.jornada;
+    const tarjeta = (a, i) => { const sobre = a._abordo > cap, pct = Math.max(0, Math.min(100, (100 * a._abordo) / cap)), km = esViaje(a) ? kmEntre(a.origen_ubicacion_id, a.destino_ubicacion_id) : 0, r = real(i);
+      return `<div class="parada ${sobre || faltaLugar(a) ? 'sobre' : ''}"><div class="pl"><b>${esc(a.hora_inicio_plan)}</b><i>${ICONO[a.tipo] || '📌'}</i><span>${minutos(a)} min</span></div>
+        <div class="pc"><div class="pt">${lineaTitulo(a)}</div>${a.actividad && !esViaje(a) && !/^(Cargar|Descargar|Entregar)/.test(a.actividad) ? `<div class="m">${esc(a.actividad)}</div>` : ''}${a.comentarios ? `<div class="m">📝 ${esc(a.comentarios)}</div>` : ''}${km ? `<div class="m">≈ ${km.toFixed(1)} km (estimado)</div>` : ''}${r?.fin_real ? `<div class="m">✅ Real: ${hora(r.inicio_real)}–${hora(r.fin_real)} ${SEM_E[r.semaforo] || ''} ${r.desv_fin_min > 0 ? '+' : ''}${r.desv_fin_min ?? ''} min</div>` : ''}
           <div class="carga"><span class="bar2"><i style="width:${pct}%"></i></span><b>${kg(a._abordo)}</b> a bordo de ${kg(cap)}</div>
-          ${sobre ? `<div class="aviso">⚠️ Aquí lleva ${kg(a._abordo)} y el vehículo admite ${kg(cap)}. ${edit ? `<button class="btn sm warn" data-antes="${i}">⬇️ Descargar todo antes de esta parada</button>` : ''}</div>` : ''}</div>
+          ${faltaLugar(a) ? '<div class="aviso">📍 Falta un lugar ubicado en el mapa.</div>' : ''}${sobre ? `<div class="aviso">⚠️ Aquí lleva ${kg(a._abordo)} y el vehículo admite ${kg(cap)}. ${edit ? `<button class="btn sm warn" data-antes="${i}">⬇️ Descargar todo antes de esta parada</button>` : ''}</div>` : ''}</div>
         ${edit ? `<div class="pa"><button class="btn sm" data-ed="${i}" aria-label="Editar">✏️</button><button class="btn sm" data-up="${i}" aria-label="Subir">↑</button><button class="btn sm" data-dn="${i}" aria-label="Bajar">↓</button><button class="btn sm bad" data-rm="${i}" aria-label="Quitar">✕</button></div>` : ''}</div>`; };
+    const optsLugar = (val) => `<option value="">— elegir —</option>${lugares.map((u) => `<option value="${u.id}" ${u.id === val ? 'selected' : ''}>${esc(u.nombre)}${u.lat == null ? ' (sin ubicar)' : ''}</option>`).join('')}${edit ? '<option value="__nuevo__">＋ Nuevo lugar (Google Maps)…</option>' : ''}`;
+    const fila = (a, i) => { const rt = rtDe(a), sobre = a._abordo > cap, r = real(i), viaje = esViaje(a);
+      const celdaLugar = viaje ? `<div class="sm mut">desde ${esc(i === 0 && edit ? '' : nom(a.origen_ubicacion_id))}</div>${i === 0 && edit ? `<select data-f="origen_ubicacion_id" data-i="${i}">${optsLugar(a.origen_ubicacion_id)}</select><div class="sm mut">hacia</div>` : ''}<select data-f="destino_ubicacion_id" data-i="${i}" ${edit ? '' : 'disabled'}>${optsLugar(a.destino_ubicacion_id)}</select>` : `<select data-f="destino_ubicacion_id" data-i="${i}" ${edit ? '' : 'disabled'}>${optsLugar(a.destino_ubicacion_id)}</select>`;
+      return `<tr class="${sobre || faltaLugar(a) ? 'over' : ''}"><td>${i + 1}</td>
+        <td><input type="time" data-f="hora_inicio_plan" data-i="${i}" value="${esc(a.hora_inicio_plan)}" ${edit ? '' : 'disabled'}></td><td><input type="time" data-f="hora_fin_plan" data-i="${i}" value="${esc(a.hora_fin_plan)}" ${edit ? '' : 'disabled'}></td>
+        <td><input data-f="dur" data-i="${i}" value="${durTxt(minutos(a))}" style="width:68px" ${edit ? '' : 'disabled'}></td>
+        <td><select data-f="rt" data-i="${i}" ${edit ? '' : 'disabled'}>${RT.map(([k, t]) => `<option value="${k}" ${k === rt ? 'selected' : ''}>${t}</option>`).join('')}</select></td><td>${celdaLugar}</td>
+        <td>${['CARGA', 'DESCARGA'].includes(rt) ? `<input type="number" data-f="mag" data-i="${i}" value="${esc(a.mag || '')}" style="width:84px" step="any" ${edit ? '' : 'disabled'}>` : rt === 'DESCARGA_TOTAL' ? `<span class="mut">${Math.round(a.mag)}</span>` : ''}</td>
+        <td><input data-f="actividad" data-i="${i}" value="${esc(a.actividad)}" placeholder="Descripción" ${edit ? '' : 'disabled'}></td><td class="${sobre ? 'err' : ''}" style="white-space:nowrap">${Math.round(a._abordo)}</td>
+        ${conReal ? `<td class="sm">${r?.fin_real ? `${hora(r.inicio_real)}–${hora(r.fin_real)}<br>${SEM_E[r.semaforo] || ''} ${r.desv_fin_min > 0 ? '+' : ''}${r.desv_fin_min}` : r?.ej_estado && r.ej_estado !== 'PENDIENTE' ? esc(ESTADO_TXT[r.ej_estado] || r.ej_estado) : '—'}</td>` : ''}
+        ${edit ? `<td style="white-space:nowrap"><button class="btn sm" data-up="${i}" aria-label="Subir">↑</button> <button class="btn sm" data-dn="${i}" aria-label="Bajar">↓</button> <button class="btn sm" data-ins="${i}" title="Insertar fila debajo">＋</button> <button class="btn sm bad" data-rm="${i}" aria-label="Quitar">✕</button></td>` : ''}</tr>`; };
+    const tabla = `<div class="scroll"><table class="ruteo"><tr><th>N</th><th>Inicio</th><th>Fin</th><th>Duración (h)</th><th>Qué hace</th><th>Lugar</th><th>Kg</th><th>Descripción</th><th>A bordo kg</th>${conReal ? '<th>Real</th>' : ''}${edit ? '<th></th>' : ''}</tr>${acts.map(fila).join('') || `<tr><td colspan="11" class="mut">Aún no hay filas. Use “＋ Agregar fila”, “📥 Pegar desde Excel” o “📋 Copiar de otro día”.</td></tr>`}</table></div>`;
     box.innerHTML = `<div class="card"><div class="row"><h3 style="margin:0">🚚 ${esc(it.vehiculo_codigo)} · ${esc(it.chofer_nombre)}</h3>${tag(it.bloqueado ? 'PLANIFICADO' : 'BORRADOR')}<span class="mut sm">versión ${it.version_actual}</span><span class="sp"></span><span class="tag ${pico > cap ? 'bad' : 'ok'}">Máximo a bordo ${kg(pico)} / ${kg(cap)}</span></div>
-      ${it.bloqueado ? `<div class="lock" style="margin-top:10px">🔒 <b>Plan aprobado y bloqueado.</b> El chofer ya puede verlo.${puedeEditarPlan() ? ' <button class="btn sm" id="unl">Desbloquear para modificar (pide motivo)</button>' : ''}</div>` : ''}
-      ${edit && acts.length ? `<div class="row" style="margin:10px 0 0"><label style="margin:0">Hora de salida</label><input type="time" id="hsal" value="${esc(horaSalida)}" style="width:auto"></div>` : ''}
-      <div style="margin-top:12px">${acts.map(tarjeta).join('') || `<div class="empty"><span class="i">🧭</span><b>Aún no hay paradas</b><p>Toque “＋ Agregar parada” para armar el recorrido.</p></div>`}</div>
-      ${edit ? `<div class="row" style="margin-top:6px"><button class="btn pri lg" id="add">＋ Agregar parada</button>${libres.length ? `<button class="btn lg" id="ped">🧾 Pedidos aprobados (${libres.length})</button>` : ''}<button class="btn" id="chain">↔ Reacomodar horas</button></div>` : ''}
+      ${it.bloqueado ? `<div class="lock" style="margin-top:10px">🔒 <b>Plan aprobado y bloqueado.</b> El chofer ya puede verlo${conReal ? ' y abajo ve cómo va (columna Real)' : ''}.${puedeEditarPlan() ? ' <button class="btn sm" id="unl">Desbloquear para modificar (pide motivo)</button>' : ''}</div>` : ''}
+      <div class="row" style="margin-top:10px"><div class="seg" style="min-width:210px"><label><input type="radio" name="vp" value="tabla" ${vista === 'tabla' ? 'checked' : ''}><span>📋 Tabla</span></label><label><input type="radio" name="vp" value="paradas" ${vista === 'paradas' ? 'checked' : ''}><span>🧭 Paradas</span></label></div>
+        ${edit && acts.length ? `<label style="margin:0">Salida</label><input type="time" id="hsal" value="${esc(horaSalida)}" style="width:auto"><label style="margin:0;display:flex;gap:6px;align-items:center" title="Cada fila empieza cuando termina la anterior"><input type="checkbox" id="cad" ${cadena ? 'checked' : ''}> Encadenar horarios</label>` : ''}</div>
+      ${resumenHoras() ? `<div class="mut sm" style="margin:8px 0">⏱️ ${esc(resumenHoras())}</div>` : ''}
+      ${edit ? `<div class="row" style="margin:8px 0"><button class="btn pri" id="addf">＋ Agregar fila</button><button class="btn" id="add">🧭 Asistente de paradas</button>${libres.length ? `<button class="btn" id="ped">🧾 Pedidos aprobados (${libres.length})</button>` : ''}<button class="btn" id="xl">📥 Pegar desde Excel</button><button class="btn" id="cop">📋 Copiar de otro día</button></div>` : ''}
+      <div style="margin-top:6px">${vista === 'tabla' ? tabla : acts.map(tarjeta).join('') || `<div class="empty"><span class="i">🧭</span><b>Aún no hay paradas</b><p>Toque “＋ Agregar fila” o use el asistente.</p></div>`}</div>
       ${(msgs.errores || []).map((e) => `<div class="err">✖ ${esc(e)}</div>`).join('')}${(msgs.advertencias || []).map((e) => `<div class="mut">⚠ ${esc(e)}</div>`).join('')}${msgs.ok ? `<div class="ok-t">${esc(msgs.ok)}</div>` : ''}
-      <div class="row" style="margin-top:14px">${edit ? '<button class="btn lg" id="save">💾 Guardar borrador</button><button class="btn ok lg" id="apr">✅ Aprobar plan</button>' : ''}<button class="btn" id="ver">🕘 Ver versiones</button></div><div id="vers"></div></div>`;
+      <div class="row" style="margin-top:14px">${edit ? '<button class="btn lg" id="save">💾 Guardar borrador</button><button class="btn ok lg" id="apr">✅ Aprobar plan</button>' : ''}<button class="btn" id="rmap">🗺️ Ver ruta en el mapa</button><button class="btn" id="ver">🕘 Ver versiones</button></div><div id="vers"></div></div>`;
+    box.querySelectorAll('input[name=vp]').forEach((r) => (r.onchange = () => { vista = state.vistaPlan = r.value; draw(); }));
     box.querySelectorAll('[data-ed]').forEach((b) => (b.onclick = () => editarParada(+b.dataset.ed)));
-    box.querySelectorAll('[data-up]').forEach((b) => (b.onclick = () => { const i = +b.dataset.up; if (i > 0) { [acts[i - 1], acts[i]] = [acts[i], acts[i - 1]]; encadenar(i - 1); draw(); } }));
-    box.querySelectorAll('[data-dn]').forEach((b) => (b.onclick = () => { const i = +b.dataset.dn; if (i < acts.length - 1) { [acts[i + 1], acts[i]] = [acts[i], acts[i + 1]]; encadenar(i); draw(); } }));
-    box.querySelectorAll('[data-rm]').forEach((b) => (b.onclick = () => { acts.splice(+b.dataset.rm, 1); encadenar(1); draw(); }));
-    box.querySelectorAll('[data-antes]').forEach((b) => (b.onclick = () => {   // inserta "descargar todo" justo antes, en el lugar donde está el vehículo
-      const i = +b.dataset.antes, lugar = acts[i - 1]?.destino_ubicacion_id || acts[i].origen_ubicacion_id;
-      acts.splice(i, 0, nuevaAct('DESCARGA', lugar, lugar, 'DESCARGA_TOTAL', 0, `Descargar todo en ${nom(lugar)}`, acts[i].hora_inicio_plan, 20)); encadenar(i + 1); draw({ ok: 'Se agregó una descarga total antes de esa parada.' });
+    box.querySelectorAll('[data-up]').forEach((b) => (b.onclick = () => { const i = +b.dataset.up; if (i > 0) { const t = acts[i - 1]; acts[i - 1] = acts[i]; acts[i] = t; const d1 = minutos(acts[i - 1]), d2 = minutos(acts[i]), h = acts[i - 1].hora_inicio_plan; if (cadena) { acts[i].hora_inicio_plan = acts[i - 1].hora_inicio_plan; } void d1; void d2; void h; reordenarHoras(i - 1); draw(); } }));
+    box.querySelectorAll('[data-dn]').forEach((b) => (b.onclick = () => { const i = +b.dataset.dn; if (i < acts.length - 1) { const t = acts[i + 1]; acts[i + 1] = acts[i]; acts[i] = t; reordenarHoras(i); draw(); } }));
+    box.querySelectorAll('[data-rm]').forEach((b) => (b.onclick = () => { const i = +b.dataset.rm; acts.splice(i, 1); if (acts.length && i === 0) acts[0].hora_inicio_plan = horaSalida; reordenarHoras(Math.max(0, i - 1)); draw(); }));
+    box.querySelectorAll('[data-ins]').forEach((b) => (b.onclick = () => { const i = +b.dataset.ins, a = acts[i], n = nuevaAct('OTRO', a.destino_ubicacion_id, a.destino_ubicacion_id, 'SOLO_VIAJE', 0, '', a.hora_fin_plan, 30); acts.splice(i + 1, 0, n); encadenar(i + 2); draw(); }));
+    box.querySelectorAll('[data-antes]').forEach((b) => (b.onclick = () => { const i = +b.dataset.antes, lugar = acts[i - 1]?.destino_ubicacion_id || acts[i].origen_ubicacion_id; acts.splice(i, 0, nuevaAct('DESCARGA', lugar, lugar, 'DESCARGA_TOTAL', 0, `Descargar todo en ${nom(lugar)}`, acts[i].hora_inicio_plan, 20)); encadenar(i + 1); draw({ ok: 'Se agregó una descarga total antes de esa parada.' }); }));
+    // edición en la tabla (como en Excel): cada cambio recalcula horarios y carga a bordo
+    box.querySelectorAll('[data-f]').forEach((el) => (el.onchange = async () => {
+      const i = +el.dataset.i, f = el.dataset.f, a = acts[i], v = el.value;
+      if (f === 'hora_inicio_plan') { const d = minutos(a); a.hora_inicio_plan = v; a.hora_fin_plan = fmt(Math.min((hm(v) ?? 0) + d, 1439)); if (i === 0) horaSalida = v; encadenar(i + 1); }
+      else if (f === 'hora_fin_plan') { if ((hm(v) ?? 0) < (hm(a.hora_inicio_plan) ?? 0)) { toast('La hora de fin no puede ser antes del inicio.'); return draw(); } a.hora_fin_plan = v; encadenar(i + 1); }
+      else if (f === 'dur') { const d = parseDur(v); if (d == null) { toast('Escriba la duración como 00:40 (horas:minutos) o en minutos.'); return draw(); } a.hora_fin_plan = fmt(Math.min((hm(a.hora_inicio_plan) ?? 0) + d, 1439)); encadenar(i + 1); }
+      else if (f === 'rt') { const era = rtDe(a); aplicarRt(a, v); if (a.tipo === 'ESPERA' && !a.actividad) a.actividad = 'Almuerzo / pausa'; if (!esViaje(a) && esViaje({ tipo: ['VIAJE', 'ENTREGA_VEHICULO'].includes(era) ? era : '' })) a.destino_ubicacion_id = a.destino_ubicacion_id || a.origen_ubicacion_id; }
+      else if (f === 'mag') a.mag = +v || 0;
+      else if (['destino_ubicacion_id', 'origen_ubicacion_id'].includes(f)) {
+        if (v === '__nuevo__') return formLugar(null, async (id) => { await recargarLugares(); a[f] = id; draw(); }, { exigirMapa: true, onCancel: () => draw() });
+        a[f] = v || null; if (f === 'destino_ubicacion_id' && esViaje(a) && !/^Viaje a|^Entregar/.test(a.actividad || 'Viaje a')) { /* se respeta la descripción escrita */ } else if (f === 'destino_ubicacion_id' && esViaje(a) && v) a.actividad = (a.tipo === 'ENTREGA_VEHICULO' ? 'Entregar el vehículo en ' : 'Viaje a ') + nom(v);
+      } else a[f] = v;
+      draw();
     }));
-    if ($('#hsal', box)) $('#hsal', box).onchange = (e) => { horaSalida = e.target.value; const d = minutos(acts[0]); acts[0].hora_inicio_plan = horaSalida; acts[0].hora_fin_plan = fmt((hm(horaSalida) ?? 0) + d); encadenar(1); draw(); };
-    if ($('#add', box)) $('#add', box).onclick = elegirParada; if ($('#ped', box)) $('#ped', box).onclick = elegirPedidos;
-    if ($('#chain', box)) $('#chain', box).onclick = () => { encadenar(1); draw({ ok: 'Horarios reacomodados.' }); };
-    const guardar = async () => { recalcular(); return api('PUT', `/itinerarios/${it.id}/actividades`, { actividades: acts.map(({ mag, _abordo, origen_nombre, destino_nombre, ...a }) => a) }); };
+    function reordenarHoras(desde) { if (!acts.length) return; if (cadena) { acts[0].hora_inicio_plan = horaSalida; acts[0].hora_fin_plan = fmt(Math.min((hm(horaSalida) ?? 0) + minutos(acts[0]), 1439)); encadenar(1); } }
+    if ($('#hsal', box)) $('#hsal', box).onchange = (e) => { horaSalida = e.target.value; const d = minutos(acts[0]); acts[0].hora_inicio_plan = horaSalida; acts[0].hora_fin_plan = fmt(Math.min((hm(horaSalida) ?? 0) + d, 1439)); encadenar(1); draw(); };
+    if ($('#cad', box)) $('#cad').onchange = (e) => { cadena = state.cadena = e.target.checked; if (cadena) encadenar(1); draw(); };
+    if ($('#addf', box)) $('#addf', box).onclick = () => { const p = posActual() || null, ini = finActual(); acts.push(nuevaAct(p ? 'OTRO' : 'VIAJE', p, p, 'SOLO_VIAJE', 0, '', ini, 30)); draw(); box.querySelector('tr:last-child [data-f=rt]')?.focus(); };
+    if ($('#add', box)) $('#add', box).onclick = elegirParada; if ($('#ped', box)) $('#ped', box).onclick = elegirPedidos; if ($('#xl', box)) $('#xl', box).onclick = pegarExcel; if ($('#cop', box)) $('#cop', box).onclick = copiarOtroDia;
+    $('#rmap', box).onclick = rutaMapa;
+    const guardar = async () => {
+      recalcular(); const f = acts.findIndex((a) => !a.actividad?.trim());
+      acts.forEach((a) => { if (!a.actividad?.trim()) a.actividad = esViaje(a) ? `Viaje a ${nom(a.destino_ubicacion_id)}` : a.tipo === 'ESPERA' ? 'Almuerzo / pausa' : `${(RT.find((x) => x[0] === rtDe(a)) || [0, 'Tarea'])[1].replace(/^\S+\s/, '')} en ${nom(a.destino_ubicacion_id)}`; }); void f;
+      return api('PUT', `/itinerarios/${it.id}/actividades`, { actividades: acts.map(({ mag, _abordo, origen_nombre, destino_nombre, ...a }) => a) });
+    };
     if ($('#save', box)) $('#save', box).onclick = async () => { try { const r = await guardar(); draw({ ok: '✅ Borrador guardado.', advertencias: r.advertencias }); } catch (e) { draw({ errores: e.detail?.errores || [e.message], advertencias: e.detail?.advertencias }); } };
     if ($('#apr', box)) $('#apr', box).onclick = async () => {
       try { await guardar(); } catch (e) { return draw({ errores: e.detail?.errores || [e.message], advertencias: e.detail?.advertencias }); }
@@ -682,7 +842,7 @@ async function seguimientoView(m) {
   if ($('#segmap')) {
     const previo = mapSeg ? { c: mapSeg.getCenter(), z: mapSeg.getZoom() } : null;
     if (mapSeg) { mapSeg.remove(); mapSeg = null; }
-    mapSeg = L.map('segmap').setView([-17.78, -63.18], 11); L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(mapSeg);
+    mapSeg = crearMapa('segmap');
     const pts = [];
     pos.forEach((f) => { L.marker([f.lat, f.lon], { icon: L.divIcon({ html: '<div style="font-size:30px;filter:drop-shadow(0 2px 3px #0006)">🚚</div>', className: '', iconSize: [34, 34], iconAnchor: [17, 17] }) }).bindPopup(`<b>${esc(f.codigo)}</b> · ${esc(f.chofer)}<br>señal ${esc(hace(f.capturado_en))}`).addTo(mapSeg); pts.push([f.lat, f.lon]); });
     det.forEach((d) => { if (!d) return; const a = d.actividades.find((x) => !['FINALIZADA', 'OMITIDA'].includes(x.ej_estado || 'PENDIENTE')); if (a?.destino_lat != null) { L.marker([a.destino_lat, a.destino_lon]).bindPopup(esc(a.actividad)).addTo(mapSeg); pts.push([a.destino_lat, a.destino_lon]); } });
@@ -827,7 +987,7 @@ async function ejecucionView(m) {
     <div class="card"><div id="ejmap" class="map" style="height:380px"></div><span class="mut">Azul: ruta planificada · Naranja: recorrido GPS real · 🚚 posición actual de vehículos en jornada</span></div>`;
   const previo = mapEj && state.ejMapaItin === sel ? { c: mapEj.getCenter(), z: mapEj.getZoom() } : null; state.ejMapaItin = sel;
   if (mapEj) { mapEj.remove(); mapEj = null; }
-  mapEj = L.map('ejmap').setView([-17.78, -63.18], 11); L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(mapEj);
+  mapEj = crearMapa('ejmap');
   const plan = []; d.actividades.forEach((a) => { if (a.origen_lat != null && !plan.length) plan.push([a.origen_lat, a.origen_lon]); if (a.destino_lat != null) { const p = [a.destino_lat, a.destino_lon]; const l = plan[plan.length - 1]; if (!l || l[0] !== p[0] || l[1] !== p[1]) plan.push(p); } });
   const todos = [];
   if (plan.length) { L.polyline(plan, { color: '#1d5fd1', weight: 4, dashArray: '8 6' }).addTo(mapEj); plan.forEach((p, i) => L.circleMarker(p, { radius: 6, color: '#1d5fd1', fillOpacity: 1 }).bindTooltip(String(i + 1)).addTo(mapEj)); todos.push(...plan); }

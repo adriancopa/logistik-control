@@ -20,7 +20,7 @@ const configBase = async () => {
     const j = await (await realFetch('sync-config.json', { cache: 'no-store' })).json(); if (j.url) window.LC_URL_BASE = j.url;
     const k = j.clave || claveDelEnlace();
     if (claveDelEnlace()) history.replaceState(null, '', location.pathname + location.search);   // borra la clave de la barra de direcciones
-    return j.url && k ? { url: j.url, clave: k } : null;
+    return j.url ? { url: j.url, clave: k || '' } : null;
   } catch { return null; }
 };
 const motor = crearMotor({
@@ -37,3 +37,5 @@ window.fetch = async (input, init = {}) => {
   if (r.base64) { const bin = atob(r.base64), a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return new Response(new Blob([a], { type: r.type }), { status: r.status }); }
   return new Response(JSON.stringify(r.body), { status: r.status, headers: { 'content-type': 'application/json' } });
 };
+
+try { if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {}); } catch (e) {}
