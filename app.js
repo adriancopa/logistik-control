@@ -18,7 +18,7 @@ const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now()
 const TZ_MIN = -240;                       // hora de planificación: Bolivia (UTC-4)
 const SOLO_VIAJE = ['VIAJE', 'ENTREGA_VEHICULO', 'ESPERA'];
 const FINAL = ['FINALIZADA', 'OMITIDA'];
-const CAUSAS = { TRAFICO: 'Tráfico', AVERIA: 'Avería', ESPERA_CARGA: 'Espera para cargar', ESPERA_DESCARGA: 'Espera para descargar', FALTA_PRODUCTO: 'Falta de producto', FALTA_DOCUMENTACION: 'Falta de documentación', CLIENTE_NO_DISPONIBLE: 'Cliente no disponible', DIRECCION_INCORRECTA: 'Dirección incorrecta', CAMBIO_PRIORIDAD: 'Cambio de prioridad', SOLICITUD_URGENTE: 'Solicitud urgente', PROBLEMA_VEHICULO: 'Problema del vehículo', CLIMA: 'Condición climática', OTRO: 'Otro' };
+const CAUSAS = { TRAFICO: 'Tráfico', AVERIA: 'Avería', ESPERA_CARGA: 'Espera para cargar', ESPERA_DESCARGA: 'Espera para descargar', FALTA_PRODUCTO: 'Falta de producto', FALTA_DOCUMENTACION: 'Falta de documentación', CLIENTE_NO_DISPONIBLE: 'Cliente no disponible', CLIENTE_NO_PIDIO: 'El cliente no lo pidió', DIRECCION_INCORRECTA: 'Dirección incorrecta', CAMBIO_PRIORIDAD: 'Cambio de prioridad', SOLICITUD_URGENTE: 'Solicitud urgente', PROBLEMA_VEHICULO: 'Problema del vehículo', CLIMA: 'Condición climática', OTRO: 'Otro' };
 
 // ---------- almacenamiento local ----------
 const dbp = new Promise((res, rej) => {
