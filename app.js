@@ -180,7 +180,10 @@ function loginView(msg = '') {
       await kvSet('cfg', { server: '', token: S.token, user: S.user });
       if (S.user.rol === 'CHOFER') { await refreshMj(); if (S.mj?.jornada && !S.mj.jornada.fin_en) startGps(); flush(); }
       render();
-    } catch (e) { $('#e').textContent = e.message; $('#go').disabled = false; $('#go').textContent = 'Ingresar'; }
+    } catch (e) {
+      $('#go').disabled = false; $('#go').textContent = 'Ingresar';
+      if (/todavía no está conectado/.test(e.message)) { $('#e').textContent = ''; conectarNube(); } else $('#e').textContent = e.message;
+    }
   };
   $('#go').onclick = go; $('#p').onkeydown = (e) => { if (e.key === 'Enter') go(); };
   $('#cfgsync').onclick = conectarNube;
@@ -199,8 +202,9 @@ window.addEventListener('lc-datos', () => {   // llegaron cambios de otros usuar
   }, 500);
 });
 function conectarNube() {
-  modal(`<h2>Conectar con Google Sheets</h2><p class="mut">Pida al administrador la URL de la aplicación web y la clave. Solo hace falta la primera vez.</p>
-    <label>URL de la aplicación web</label><input id="su" value="${esc(window.LC_URL_BASE || '')}" placeholder="https://script.google.com/macros/s/.../exec" autocapitalize="off"><label>Clave</label><input id="sk" autocapitalize="off">
+  const fija = !!window.LC_URL_BASE;
+  modal(`<h2>${fija ? '🔑 Clave de acceso' : 'Conectar con Google Sheets'}</h2><p class="mut">${fija ? 'Escriba la <b>clave de acceso</b> que le dio el administrador. Solo hace falta la primera vez en este equipo; después entra directo con su usuario y PIN.' : 'Pida al administrador la URL de la aplicación web y la clave. Solo hace falta la primera vez.'}</p>
+    <label ${fija ? 'hidden' : ''}>URL de la aplicación web</label><input id="su" ${fija ? 'hidden' : ''} value="${esc(window.LC_URL_BASE || '')}" placeholder="https://script.google.com/macros/s/.../exec" autocapitalize="off"><label>Clave de acceso</label><input id="sk" autocapitalize="off" placeholder="Pegue la clave aquí">
     <div class="err" id="se"></div><button class="big" id="ok">CONECTAR</button><button class="sec" id="no" style="width:100%">Cancelar</button>`, (m, close) => {
     $('#no', m).onclick = close;
     $('#ok', m).onclick = async () => {
