@@ -860,7 +860,7 @@ function rangoPeriodo(p, c) {
   if (p === 'mesant') return [iso(new Date(d.getFullYear(), d.getMonth() - 1, 1)), iso(new Date(d.getFullYear(), d.getMonth(), 0))];
   return [c?.desde || iso(d), c?.hasta || iso(d)];
 }
-const CAUSA_TXT = { TRAFICO: 'Tráfico', AVERIA: 'Avería', ESPERA_CARGA: 'Espera para cargar', ESPERA_DESCARGA: 'Espera para descargar', FALTA_PRODUCTO: 'Falta de producto', FALTA_DOCUMENTACION: 'Falta de documentación', CLIENTE_NO_DISPONIBLE: 'Cliente no disponible', DIRECCION_INCORRECTA: 'Dirección incorrecta', CAMBIO_PRIORIDAD: 'Cambio de prioridad', SOLICITUD_URGENTE: 'Solicitud urgente', PROBLEMA_VEHICULO: 'Problema del vehículo', CLIMA: 'Clima', OTRO: 'Otro' };
+const CAUSA_TXT = { TRAFICO: 'Tráfico', AVERIA: 'Avería', ESPERA_CARGA: 'Espera para cargar', ESPERA_DESCARGA: 'Espera para descargar', FALTA_PRODUCTO: 'Falta de producto', FALTA_DOCUMENTACION: 'Falta de documentación', CLIENTE_NO_DISPONIBLE: 'Cliente no disponible', CLIENTE_NO_PIDIO: 'El cliente no lo pidió', DIRECCION_INCORRECTA: 'Dirección incorrecta', CAMBIO_PRIORIDAD: 'Cambio de prioridad', SOLICITUD_URGENTE: 'Solicitud urgente', PROBLEMA_VEHICULO: 'Problema del vehículo', CLIMA: 'Clima', OTRO: 'Otro' };
 async function reportesView(m) {
   const per = state.repPer || 'mes', [desde, hasta] = rangoPeriodo(per, state.repCustom);
   const r = await api('GET', `/reportes/resumen?desde=${desde}&hasta=${hasta}`), t = r.totales;
