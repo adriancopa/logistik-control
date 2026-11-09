@@ -885,7 +885,7 @@ async function reportesView(m) {
   const sol = r.solicitudes, maxC = Math.max(1, ...r.causas.map((c) => c.n));
   const tsv = ['Fecha\tVehículo\tChofer\tEstado\tPlanificadas\tEjecutadas\tCumplimiento %\tRetraso prom. (min)\tKm planificados\tKm reales', ...r.filas.map((f) => [f.fecha, f.vehiculo, f.chofer, f.estado, f.planificadas, f.ejecutadas, f.cumplimiento ?? '', f.retraso_prom ?? '', f.km_plan, f.km_real].join('\t'))].join('\n');
   m.innerHTML = pageHead('reportes', '<button class="btn" id="copiar">📋 Copiar para Excel</button><button class="btn" id="imp">🖨️ Imprimir</button>', `Del <b>${esc(desde)}</b> al <b>${esc(hasta)}</b>`)
-    + `<div class="card flat row"><b>📊 Reporte del día (plan vs ejecutado)</b><input type="date" id="rdf" value="${state.repDia || today()}" style="width:auto"><button class="btn pri" id="rdb">Ver y descargar imagen</button><button class="btn" id="rsb">📅 Reporte semanal</button><span class="mut sm">El diario se genera y se guarda solo cada día a las ${HORA_REPORTE}:00, y el semanal los domingos a las ${HORA_REPORTE}:00, mientras la app esté abierta (o al abrirla). Comparan lo planificado con lo ejecutado: tiempos, retrasos, pérdidas, cambios, vacíos, principales paradas y problemas. El botón semanal usa la fecha elegida para tomar su semana (lunes a domingo).</span></div>`
+    + `<div class="card flat row"><b>📊 Reporte del día (plan vs ejecutado)</b><input type="date" id="rdf" value="${state.repDia || today()}" style="width:auto"><button class="btn pri" id="rdb">Informe del día</button><button class="btn pri" id="rsb">📅 Informe semanal</button><button class="btn" id="rdd">Detallado del día</button><button class="btn" id="rsd">Detallado semanal</button><span class="mut sm">El diario se genera y se guarda solo cada día a las ${HORA_REPORTE}:00, y el semanal los domingos a las ${HORA_REPORTE}:00, mientras la app esté abierta (o al abrirla). Comparan lo planificado con lo ejecutado: tiempos, retrasos, pérdidas, cambios, vacíos, principales paradas y problemas. El botón semanal usa la fecha elegida para tomar su semana (lunes a domingo).</span></div>`
     + `<div class="chips">${PERIODOS.map(([k, tx]) => `<button data-p="${k}" class="${k === per ? 'on' : ''}">${tx}</button>`).join('')}</div>`
     + (per === 'custom' ? `<div class="card flat row"><label style="margin:0">Desde</label><input type="date" id="d1" value="${desde}" style="width:auto"><label style="margin:0">Hasta</label><input type="date" id="d2" value="${hasta}" style="width:auto"><button class="btn pri" id="aplicar">Ver</button></div>` : '')
     + (!t.itinerarios ? vacio('📊', 'No hay datos en este período', 'Los indicadores aparecen cuando hay itinerarios aprobados y jornadas ejecutadas. Pruebe con otro período.') : `
@@ -905,6 +905,8 @@ async function reportesView(m) {
   $('#imp').onclick = () => window.print();
   $('#rdb').onclick = () => { state.repDia = $('#rdf').value || today(); verReporteDia(state.repDia); };
   $('#rsb').onclick = () => { state.repDia = $('#rdf').value || today(); verReporteSemana(state.repDia); };
+  $('#rdd').onclick = () => { state.repDia = $('#rdf').value || today(); verReporteDia(state.repDia, true); };
+  $('#rsd').onclick = () => { state.repDia = $('#rdf').value || today(); verReporteSemana(state.repDia, true); };
   $('#copiar').onclick = async () => { try { await navigator.clipboard.writeText(tsv); toast('📋 Copiado. Péguelo en Excel o Google Sheets.'); } catch { toast('No se pudo copiar en este dispositivo'); } };
 }
 
@@ -1140,6 +1142,15 @@ function dibujarImagen(bloques, W = 1500, esc = 1.5) {
       } else if (b.t === 'h') {
         y += 8; if (dib) { ctx.fillStyle = '#0f172a'; ctx.font = F(20, 1); ctx.fillText(b.texto, M, y + 22); if (b.sub) { const tw = ctx.measureText(b.texto).width; ctx.fillStyle = '#64748b'; ctx.font = F(14); ctx.fillText(b.sub, M + tw, y + 22); } }
         y += 36;
+      } else if (b.t === 'barras') {
+        if (b.titulo) { if (dib) { ctx.fillStyle = '#0f172a'; ctx.font = F(17, 1); ctx.fillText(b.titulo, M, y + 20); } y += 32; }
+        const lw = b.lw || 150, tw = 230, bw = W - 2 * M - lw - tw;
+        b.items.forEach((k) => { if (dib) { ctx.fillStyle = '#334155'; ctx.font = F(14); ctx.fillText(k.l, M, y + 17); ctx.fillStyle = '#e2e8f0'; ctx.fillRect(M + lw, y + 4, bw, 16); ctx.fillStyle = k.c || '#2563eb'; ctx.fillRect(M + lw, y + 4, Math.max(0, Math.min(1, (k.v || 0) / (b.max || 100))) * bw, 16); ctx.fillStyle = '#0f172a'; ctx.font = F(14, 1); ctx.fillText(k.t || '', M + lw + bw + 12, y + 17); } y += 28; });
+        y += 12;
+      } else if (b.t === 'lista') {
+        if (b.titulo) { if (dib) { ctx.fillStyle = '#0f172a'; ctx.font = F(17, 1); ctx.fillText(b.titulo, M, y + 20); } y += 32; }
+        ctx.font = F(15); b.items.forEach((k) => { const ls = partir(ctx, k.t, W - 2 * M - 30); if (dib) { ctx.fillStyle = k.c || '#2563eb'; ctx.beginPath(); ctx.arc(M + 8, y + 11, 6, 0, 7); ctx.fill(); ctx.fillStyle = '#0f172a'; ctx.font = F(15); ls.forEach((l, i) => ctx.fillText(l, M + 26, y + 16 + i * 21)); } y += ls.length * 21 + 8; });
+        y += 8;
       } else if (b.t === 'nota') {
         ctx.font = F(b.px || 14, b.b); const ls = partir(ctx, b.texto, W - 2 * M);
         if (dib) { ctx.fillStyle = b.c || '#475569'; ls.forEach((l, i) => ctx.fillText(l, M, y + 16 + i * 20)); }
@@ -1192,7 +1203,7 @@ function bloquesReporteDia(r) {
   const EST = { FINALIZADA: ['Hecha', '#16a34a'], OMITIDA: ['Omitida', '#d97706'], EN_CURSO: ['En curso', '#2563eb'], PENDIENTE: [ya ? 'No realizada' : 'Pendiente', ya ? '#dc2626' : '#64748b'] };
   const bl = [{ t: 'titulo', texto: 'Reporte del día · Planificado vs Ejecutado', sub: `${fechaLarga(r.fecha)} · generado ${new Date(r.generado_en).toLocaleString('es-BO')}` }];
   if (!r.itinerarios.length) return [...bl, { t: 'nota', texto: 'No hay itinerarios aprobados para este día.', px: 16 }];
-  const dif = t.real_total_min - t.plan_total_min;
+  const dif = t.real_total_min - t.plan_hechas_min;
   bl.push({ t: 'kpis', items: [
     { l: 'Cumplimiento', v: t.cumplimiento == null ? '—' : t.cumplimiento + '%', s: `${t.finalizadas} de ${t.actividades} actividades`, c: t.cumplimiento >= 90 ? '#16a34a' : t.cumplimiento >= 70 ? '#d97706' : '#dc2626' },
     { l: 'Tiempo planificado', v: dm(t.plan_total_min), s: 'suma de las actividades' },
@@ -1230,12 +1241,12 @@ function bloquesReporteDia(r) {
   return bl;
 }
 
-async function generarReporteDia(fecha) {
+async function generarReporteDia(fecha, detalle) {
   const r = await api('GET', '/reportes/dia?fecha=' + fecha);
-  return { r, cv: dibujarImagen(bloquesReporteDia(r)) };
+  return { r, cv: dibujarImagen(detalle ? bloquesReporteDia(r) : bloquesEjecutivoDia(r)) };
 }
-async function verReporteDia(fecha) {
-  try { const { cv } = await generarReporteDia(fecha); verImagen('Reporte del día ' + fecha, cv, 'Reporte-' + fecha); } catch (e) { toast(e.message); }
+async function verReporteDia(fecha, detalle) {
+  try { const { cv } = await generarReporteDia(fecha, detalle); verImagen('Reporte del día ' + fecha, cv, 'Reporte-' + (detalle ? 'detallado-' : '') + fecha); } catch (e) { toast(e.message); }
 }
 
 // Descarga automática a las 19:00: la app, mientras está abierta (o la próxima vez que se abra), genera y guarda el reporte del día.
@@ -1273,7 +1284,7 @@ function iniciarReporteDiario() {
 // ---------- Reporte semanal: plan vs ejecución, principales paradas y problemas ----------
 const DIA_CORTO = ['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'];
 function bloquesReporteSemana(r) {
-  const t = r.totales, dif = t.real_min - t.plan_min, bl = [{ t: 'titulo', texto: 'Reporte semanal · Planificado vs Ejecutado', sub: `Semana del ${r.desde} al ${r.hasta} · generado ${new Date(r.generado_en).toLocaleString('es-BO')}` }];
+  const t = r.totales, dif = t.real_min - t.plan_hechas_min, bl = [{ t: 'titulo', texto: 'Reporte semanal · Planificado vs Ejecutado', sub: `Semana del ${r.desde} al ${r.hasta} · generado ${new Date(r.generado_en).toLocaleString('es-BO')}` }];
   if (!t.planificadas) return [...bl, { t: 'nota', texto: 'No hubo itinerarios aprobados en esta semana.', px: 16 }];
   bl.push({ t: 'kpis', por: 5, items: [
     { l: 'Cumplimiento semanal', v: t.cumplimiento == null ? '—' : t.cumplimiento + '%', s: `${t.ejecutadas} de ${t.planificadas} actividades`, c: t.cumplimiento >= 90 ? '#16a34a' : t.cumplimiento >= 70 ? '#d97706' : '#dc2626' },
@@ -1294,7 +1305,7 @@ function bloquesReporteSemana(r) {
   bl.push({ t: 'nota', texto: lect.join(' '), px: 15, b: true, c: '#0f172a' });
   bl.push({ t: 'h', texto: 'Planificado vs ejecutado por día' });
   bl.push({ t: 'tabla', cols: [{ h: 'Día', w: 0.14 }, { h: 'Itin.', w: 0.06, a: 'r' }, { h: 'Actividades plan', w: 0.1, a: 'r' }, { h: 'Hechas', w: 0.08, a: 'r' }, { h: 'Cumpl.', w: 0.08, a: 'r' }, { h: 'Tiempo plan', w: 0.11, a: 'r' }, { h: 'Tiempo real', w: 0.11, a: 'r' }, { h: 'Diferencia', w: 0.1, a: 'r' }, { h: 'Con retraso', w: 0.08, a: 'r' }, { h: 'Retraso prom.', w: 0.08, a: 'r' }, { h: 'Km real', w: 0.06, a: 'r' }],
-    filas: r.dias.map((d, i) => d.planificadas ? [`${DIA_CORTO[i]} ${d.fecha.slice(5)}`, String(d.itinerarios), String(d.planificadas), String(d.ejecutadas), { t: d.cumplimiento + '%', c: d.cumplimiento >= 90 ? '#16a34a' : d.cumplimiento >= 70 ? '#d97706' : '#dc2626', b: true }, dm(d.plan_min), dm(d.real_min), { t: dm(d.real_min - d.plan_min), c: d.real_min - d.plan_min > 20 ? '#d97706' : '#0f172a' }, String(d.con_retraso), { t: d.retraso_prom == null ? '—' : signo(d.retraso_prom) + ' min', c: colDesv(d.retraso_prom), b: true }, String(d.km_real)] : [`${DIA_CORTO[i]} ${d.fecha.slice(5)}`, { t: 'sin plan', c: '#94a3b8' }, '', '', '', '', '', '', '', '', '']) });
+    filas: r.dias.map((d, i) => d.planificadas ? [`${DIA_CORTO[i]} ${d.fecha.slice(5)}`, String(d.itinerarios), String(d.planificadas), String(d.ejecutadas), { t: d.cumplimiento + '%', c: d.cumplimiento >= 90 ? '#16a34a' : d.cumplimiento >= 70 ? '#d97706' : '#dc2626', b: true }, dm(d.plan_min), dm(d.real_min), { t: dm(d.real_min - d.plan_hechas_min), c: d.real_min - d.plan_hechas_min > 20 ? '#d97706' : '#0f172a' }, String(d.con_retraso), { t: d.retraso_prom == null ? '—' : signo(d.retraso_prom) + ' min', c: colDesv(d.retraso_prom), b: true }, String(d.km_real)] : [`${DIA_CORTO[i]} ${d.fecha.slice(5)}`, { t: 'sin plan', c: '#94a3b8' }, '', '', '', '', '', '', '', '', '']) });
   bl.push({ t: 'h', texto: 'Principales paradas', sub: '  lugares con más visitas operativas (carga, descarga, entrega)' });
   bl.push({ t: 'tabla', vacio: 'Sin paradas registradas', cols: [{ h: 'Lugar', w: 0.28 }, { h: 'Visitas', w: 0.08, a: 'r' }, { h: 'Hechas', w: 0.08, a: 'r' }, { h: 'No realizadas', w: 0.1, a: 'r' }, { h: 'Tiempo plan', w: 0.12, a: 'r' }, { h: 'Tiempo real', w: 0.12, a: 'r' }, { h: 'Retraso prom.', w: 0.12, a: 'r' }, { h: 'Kg movidos', w: 0.1, a: 'r' }],
     filas: r.paradas.map((p) => [p.lugar, String(p.visitas), String(p.hechas), { t: String(p.no_realizadas), c: p.no_realizadas ? '#dc2626' : '#0f172a', b: !!p.no_realizadas }, dm(p.plan_min), p.hechas ? dm(p.real_min) : '—', { t: p.retraso_prom == null ? '—' : signo(p.retraso_prom) + ' min', c: colDesv(p.retraso_prom), b: true }, String(p.kg)]) });
@@ -1309,8 +1320,8 @@ function bloquesReporteSemana(r) {
   return bl;
 }
 const lunesDe = (f) => { const d = new Date(f + 'T00:00:00Z'); return new Date(d.getTime() - ((d.getUTCDay() + 6) % 7) * 864e5).toISOString().slice(0, 10); };
-async function generarReporteSemana(fecha) { const r = await api('GET', '/reportes/semana?fecha=' + fecha); return { r, cv: dibujarImagen(bloquesReporteSemana(r)) }; }
-async function verReporteSemana(fecha) { try { const { r, cv } = await generarReporteSemana(fecha); verImagen('Reporte semanal ' + r.desde, cv, 'Reporte-semanal-' + r.desde); } catch (e) { toast(e.message); } }
+async function generarReporteSemana(fecha, detalle) { const r = await api('GET', '/reportes/semana?fecha=' + fecha); return { r, cv: dibujarImagen(detalle ? bloquesReporteSemana(r) : bloquesEjecutivoSemana(r)) }; }
+async function verReporteSemana(fecha, detalle) { try { const { r, cv } = await generarReporteSemana(fecha, detalle); verImagen('Reporte semanal ' + r.desde, cv, 'Reporte-semanal-' + (detalle ? 'detallado-' : '') + r.desde); } catch (e) { toast(e.message); } }
 async function revisarReporteSemanal() {   // domingo desde las 19:00 (semana en curso) o, si no se generó, la semana anterior al abrir la app
   if (!state.token || !['ADMIN', 'PLANIFICADOR', 'CONSULTA'].includes(state.user?.rol)) return;
   const ahora = new Date(), dom = ahora.getDay() === 0 && ahora.getHours() >= HORA_REPORTE, base = dom ? today() : today(-7), lun = lunesDe(base), k = 'lc_rep_sem_' + lun;
@@ -1322,4 +1333,61 @@ async function revisarReporteSemanal() {   // domingo desde las 19:00 (semana en
     const donde = await guardarArchivo(await aBlob(cv, 'png'), `Reporte-semanal-${r.desde}.png`);
     toast(donde ? `📅 Reporte semanal ${r.desde} guardado en ${donde}` : '📅 Reporte semanal listo (no se pudo guardar el archivo)');
   } catch { /* se reintenta */ }
+}
+// ---------- Informes gerenciales (una sola hoja): lo esencial para decidir ----------
+const ACCION_CAUSA = { TRAFICO: 'Evaluar adelantar la salida o reprogramar tramos en hora pico.', AVERIA: 'Revisar el plan de mantenimiento preventivo del vehículo.', PROBLEMA_VEHICULO: 'Revisar el plan de mantenimiento preventivo del vehículo.', ESPERA_CARGA: 'Coordinar con el cliente horarios de atención para cargar.', ESPERA_DESCARGA: 'Coordinar con el cliente horarios de atención para descargar.', FALTA_PRODUCTO: 'Confirmar la disponibilidad de producto el día anterior.', FALTA_DOCUMENTACION: 'Verificar la documentación antes de salir.', CLIENTE_NO_DISPONIBLE: 'Confirmar con el cliente antes de programar la visita.', CLIENTE_NO_PIDIO: 'Validar los pedidos con el cliente antes de planificar.', DIRECCION_INCORRECTA: 'Validar y corregir las direcciones en Lugares.', CAMBIO_PRIORIDAD: 'Reducir cambios de prioridad una vez aprobado el plan.', SOLICITUD_URGENTE: 'Reservar holgura en el plan para pedidos urgentes.', CLIMA: 'Considerar holgura por clima en la temporada.' };
+const semC = (v, ok = 90, med = 70) => (v == null ? '#64748b' : v >= ok ? '#16a34a' : v >= med ? '#d97706' : '#dc2626');
+
+function bloquesEjecutivoSemana(r) {
+  const t = r.totales, dif = t.real_min - t.plan_hechas_min, bl = [{ t: 'titulo', texto: 'Informe gerencial semanal · Plan vs Ejecución', sub: `Semana del ${r.desde} al ${r.hasta}` }];
+  if (!t.planificadas) return [...bl, { t: 'nota', texto: 'No hubo itinerarios aprobados en esta semana.', px: 16 }];
+  bl.push({ t: 'kpis', por: 5, items: [
+    { l: 'Cumplimiento del plan', v: t.cumplimiento + '%', s: `${t.ejecutadas} de ${t.planificadas} actividades`, c: semC(t.cumplimiento) },
+    { l: 'Tiempo real vs plan', v: signo(dif) + ' min', s: `${dm(t.real_min)} de ${dm(t.plan_min)}`, c: dif > 60 ? '#dc2626' : dif > 20 ? '#d97706' : '#16a34a' },
+    { l: 'Retraso promedio', v: t.retraso_prom == null ? '—' : signo(t.retraso_prom) + ' min', s: `${t.con_retraso} actividades tarde`, c: colDesv(t.retraso_prom) },
+    { l: 'Tiempo perdido', v: dm(t.perdidas_min), s: `${t.incidencias} incidencias`, c: t.perdidas_min ? '#dc2626' : '#16a34a' },
+    { l: 'No realizadas', v: String(t.planificadas - t.ejecutadas), s: `${t.cambios} cambios al plan`, c: t.planificadas - t.ejecutadas ? '#dc2626' : '#16a34a' },
+  ] });
+  const c1 = r.causas.find((c) => c.minutos > 0) || r.causas[0], pd = r.peores_dias[0], lp = r.lugares_retraso[0], con = [];
+  con.push({ t: `Cumplimiento de ${t.cumplimiento}%: se hicieron ${t.ejecutadas} de ${t.planificadas} actividades; ${t.km_real} km recorridos.`, c: semC(t.cumplimiento) });
+  if (pd && pd.cumplimiento < 100) con.push({ t: `Día más débil: ${DIA_CORTO[(new Date(pd.fecha + 'T00:00:00Z').getUTCDay() + 6) % 7]} ${pd.fecha.slice(5)} con ${pd.cumplimiento}% de cumplimiento.`, c: '#d97706' });
+  if (c1) con.push({ t: `Principal problema: ${CAUSA_TXT[c1.tipo] || c1.tipo} (${c1.n} vez/veces${c1.minutos ? `, ${c1.minutos} min perdidos` : ''}).${ACCION_CAUSA[c1.tipo] ? ' Acción sugerida: ' + ACCION_CAUSA[c1.tipo] : ''}`, c: '#dc2626' });
+  if (lp) con.push({ t: `Mayor retraso en ${lp.lugar}: +${lp.retraso_prom} min en promedio.`, c: '#d97706' });
+  if (t.cambios) con.push({ t: `El plan se modificó ${t.cambios} vez/veces después de aprobarse.`, c: '#d97706' });
+  bl.push({ t: 'lista', titulo: 'Conclusiones', items: con });
+  bl.push({ t: 'barras', titulo: 'Cumplimiento por día', items: r.dias.map((d, i) => ({ l: `${DIA_CORTO[i]} ${d.fecha.slice(5)}`, v: d.planificadas ? d.cumplimiento : 0, c: d.planificadas ? semC(d.cumplimiento) : '#cbd5e1', t: d.planificadas ? `${d.cumplimiento}% · ${d.ejecutadas}/${d.planificadas}${d.retraso_prom != null ? ` · ${signo(d.retraso_prom)} min` : ''}` : 'sin plan' })) });
+  if (r.causas.some((c) => c.minutos)) { const mx = Math.max(...r.causas.map((c) => c.minutos)); bl.push({ t: 'barras', titulo: 'Principales problemas (minutos perdidos)', lw: 230, max: mx, items: r.causas.filter((c) => c.minutos).slice(0, 4).map((c) => ({ l: CAUSA_TXT[c.tipo] || c.tipo, v: c.minutos, c: '#dc2626', t: `${c.minutos} min · ${c.n}×` })) }); }
+  if (r.paradas.length) bl.push({ t: 'tabla', cols: [{ h: 'Principales paradas', w: 0.4 }, { h: 'Visitas', w: 0.12, a: 'r' }, { h: 'No realizadas', w: 0.16, a: 'r' }, { h: 'Tiempo real', w: 0.16, a: 'r' }, { h: 'Retraso prom.', w: 0.16, a: 'r' }], filas: r.paradas.slice(0, 5).map((p) => [p.lugar, String(p.visitas), { t: String(p.no_realizadas), c: p.no_realizadas ? '#dc2626' : '#0f172a', b: !!p.no_realizadas }, p.hechas ? dm(p.real_min) : '—', { t: p.retraso_prom == null ? '—' : signo(p.retraso_prom) + ' min', c: colDesv(p.retraso_prom), b: true }]) });
+  return bl;
+}
+
+function bloquesEjecutivoDia(r) {
+  const t = r.totales, ya = r.fecha < today() || new Date().getHours() >= 19, dif = t.real_total_min - t.plan_hechas_min, bl = [{ t: 'titulo', texto: 'Informe gerencial del día · Plan vs Ejecución', sub: fechaLarga(r.fecha) }];
+  if (!r.itinerarios.length) return [...bl, { t: 'nota', texto: 'No hay itinerarios aprobados para este día.', px: 16 }];
+  const noReal = t.omitidas + t.pendientes;
+  bl.push({ t: 'kpis', por: 5, items: [
+    { l: 'Cumplimiento del plan', v: t.cumplimiento + '%', s: `${t.finalizadas} de ${t.actividades} actividades`, c: semC(t.cumplimiento) },
+    { l: 'Tiempo real vs plan', v: signo(dif) + ' min', s: `${dm(t.real_total_min)} real vs ${dm(t.plan_hechas_min)} plan (lo hecho)`, c: dif > 30 ? '#dc2626' : dif > 10 ? '#d97706' : '#16a34a' },
+    { l: 'Actividades tarde', v: String(t.con_retraso), s: 'más de 10 min de retraso', c: t.con_retraso ? '#d97706' : '#16a34a' },
+    { l: 'Tiempo perdido', v: dm(t.perdidas_min), s: `vacíos: ${dm(t.vacios_real_min)}`, c: t.perdidas_min ? '#dc2626' : '#16a34a' },
+    { l: ya ? 'No realizadas' : 'Pendientes', v: String(noReal), s: `${t.cambios} cambios al plan`, c: noReal ? (ya ? '#dc2626' : '#64748b') : '#16a34a' },
+  ] });
+  const con = [];
+  for (const it of r.itinerarios) {
+    const s = it.resumen, ps = [`${it.vehiculo} (${it.chofer}): ${s.finalizadas}/${s.actividades} actividades`];
+    if (s.real_inicio) ps.push(`salió ${s.real_inicio} (plan ${s.plan_inicio}, ${signo(s.retraso_inicio_min)} min)`);
+    if (s.real_fin) ps.push(`cerró ${s.real_fin} (plan ${s.plan_fin}, ${signo(s.retraso_cierre_min)} min)`);
+    con.push({ t: ps.join(' · ') + '.', c: semC(s.cumplimiento) });
+  }
+  const causas = {}; r.itinerarios.forEach((it) => it.resumen.causas.forEach((c) => { causas[c.tipo] = (causas[c.tipo] || 0) + c.minutos; }));
+  const top = Object.entries(causas).sort((a, b) => b[1] - a[1])[0];
+  if (top && top[1] > 0) con.push({ t: `Principal pérdida: ${CAUSA_TXT[top[0]] || top[0]} (${top[1]} min).${ACCION_CAUSA[top[0]] ? ' Acción sugerida: ' + ACCION_CAUSA[top[0]] : ''}`, c: '#dc2626' });
+  const tardes = r.itinerarios.flatMap((it) => it.filas.filter((f) => (f.desv_fin || 0) > 30).map((f) => `${f.destino || f.actividad} (+${f.desv_fin} min)`)).slice(0, 3);
+  if (tardes.length) con.push({ t: `Mayores retrasos: ${tardes.join(', ')}.`, c: '#d97706' });
+  const sin = r.itinerarios.flatMap((it) => it.filas.filter((f) => f.estado === 'OMITIDA' || (f.estado === 'PENDIENTE' && ya)).map((f) => f.destino || f.actividad)).slice(0, 4);
+  if (sin.length) con.push({ t: `Sin realizar: ${sin.join(', ')}${noReal > sin.length ? ` y ${noReal - sin.length} más` : ''}.`, c: '#dc2626' });
+  if (t.cambios) con.push({ t: `El plan se modificó ${t.cambios} vez/veces tras aprobarse (+${t.anadidas} añadidas, −${t.quitadas} quitadas, ${t.reprogramadas} reprogramadas).`, c: '#d97706' });
+  bl.push({ t: 'lista', titulo: 'Conclusiones', items: con });
+  bl.push({ t: 'barras', titulo: 'Cumplimiento por vehículo', lw: 200, items: r.itinerarios.map((it) => ({ l: it.vehiculo, v: it.resumen.cumplimiento || 0, c: semC(it.resumen.cumplimiento), t: `${it.resumen.cumplimiento ?? 0}% · ${it.resumen.finalizadas}/${it.resumen.actividades}` })) });
+  return bl;
 }
