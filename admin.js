@@ -78,6 +78,7 @@ function logout() { sessionStorage.removeItem('tk'); state.token = null; state.u
 async function render() {
   if (!state.token) return loginView();
   if (!state.user) { try { state.user = await api('GET', '/me'); } catch { return logout(); } }
+  iniciarReporteDiario();
   const vis = vistasPermitidas();
   if (state.view !== 'notif') state.view = vis.includes(state.view) ? state.view : vis[0];
   const notifs = await api('GET', '/notificaciones').catch(() => []);
@@ -726,8 +727,22 @@ function itinEditor(box, it, ubs, pend, edit, ej) {
     });
   }
 
+  function imagenPlan() {   // exporta el plan tal como está en pantalla (tabla completa) como imagen PNG o JPG
+    recalcular(); if (!acts.length) return toast('Aún no hay filas para exportar.');
+    const conReal = !!ej?.jornada, por = (f) => acts.filter(f).reduce((t, a) => t + minutos(a), 0), ini = hm(acts[0].hora_inicio_plan), fin = hm(acts[acts.length - 1].hora_fin_plan), pico = Math.max(0, ...acts.map((a) => a._abordo));
+    const rtTxt = (a) => (RT.find((x) => x[0] === rtDe(a)) || [0, ''])[1];
+    const cols = [{ h: 'N', w: 0.03, a: 'c' }, { h: 'Inicio', w: 0.06, a: 'c' }, { h: 'Fin', w: 0.06, a: 'c' }, { h: 'Duración', w: 0.07, a: 'r' }, { h: 'Qué hace', w: 0.11 }, { h: 'Lugar', w: 0.24 }, { h: 'Kg', w: 0.06, a: 'r' }, { h: 'A bordo kg', w: 0.07, a: 'r' }, { h: 'Descripción / comentarios', w: conReal ? 0.17 : 0.3 }, ...(conReal ? [{ h: 'Real', w: 0.13 }] : [])];
+    const filas = acts.map((a, i) => { const r = real(i), sobre = a._abordo > it.capacidad_kg; return [String(i + 1), a.hora_inicio_plan, a.hora_fin_plan, dm(minutos(a)), rtTxt(a),
+      esViaje(a) ? `${nom(a.origen_ubicacion_id)} → ${nom(a.destino_ubicacion_id)}` : nom(a.destino_ubicacion_id), ['CARGA', 'DESCARGA', 'DESCARGA_TOTAL'].includes(tipoCarga(a)) ? String(Math.round(a.mag || 0)) : '', { t: String(Math.round(a._abordo)), c: sobre ? '#dc2626' : '#0f172a', b: sobre },
+      [a.actividad, a.comentarios].filter(Boolean).join(' · '), ...(conReal ? [r?.fin_real ? { t: `${hora(r.inicio_real)}–${hora(r.fin_real)}  ${signo(r.desv_fin_min)} min`, c: colDesv(r.desv_fin_min), b: true } : r?.ej_estado && r.ej_estado !== 'PENDIENTE' ? (ESTADO_TXT[r.ej_estado] || r.ej_estado) : '—'] : [])]; });
+    const bl = [{ t: 'titulo', texto: `Plan de ruta · ${fechaLarga(it.fecha)}`, sub: `${it.vehiculo_codigo} · ${it.chofer_nombre} · ${it.bloqueado ? `Plan aprobado (versión ${it.version_actual})` : 'BORRADOR (todavía no aprobado)'}` },
+      { t: 'kpis', items: [{ l: 'Jornada', v: ini != null && fin != null ? `${acts[0].hora_inicio_plan}–${acts[acts.length - 1].hora_fin_plan}` : '—', s: ini != null && fin != null ? dm(fin - ini) : '' }, { l: 'Manejo', v: dm(por(esViaje)) }, { l: 'Carga / descarga', v: dm(por((a) => !esViaje(a) && a.tipo !== 'ESPERA' && a.tipo !== 'OTRO')) }, { l: 'Pausas', v: dm(por((a) => a.tipo === 'ESPERA')) }, { l: 'Máximo a bordo', v: kg(pico), s: `capacidad ${kg(it.capacidad_kg)}`, c: pico > it.capacidad_kg ? '#dc2626' : '#2563eb' }] },
+      { t: 'tabla', cols, filas, vacio: 'Sin filas' }];
+    verImagen('Plan de ruta', dibujarImagen(bl), `Plan-${it.fecha}-${String(it.vehiculo_codigo).replace(/[^\w-]/g, '')}`);
+  }
+
   // ----- dibujo -----
-  const ICONO = { VIAJE: '🚚', CARGA: '⬆️', DESCARGA: '⬇️', RECOJO: '⬆️', ENTREGA: '⬇️', ENTREGA_VEHICULO: '🏁', ESPERA: '🍽️', OTRO: '📌' };
+  const ICONO ={ VIAJE: '🚚', CARGA: '⬆️', DESCARGA: '⬇️', RECOJO: '⬆️', ENTREGA: '⬇️', ENTREGA_VEHICULO: '🏁', ESPERA: '🍽️', OTRO: '📌' };
   const lineaTitulo = (a) => { const ct = tipoCarga(a); if (esViaje(a)) return `${a.tipo === 'ENTREGA_VEHICULO' ? '🏁 Entregar el vehículo' : '🚚 Viaje'}: <b>${esc(nom(a.origen_ubicacion_id))}</b> → <b>${esc(nom(a.destino_ubicacion_id))}</b>`; if (a.tipo === 'ESPERA') return '🍽️ Almuerzo / pausa'; return `${ct === 'CARGA' ? '⬆️ Cargar' : ct === 'SOLO_VIAJE' ? '📌 Tarea' : '⬇️ Descargar'}${ct === 'CARGA' || ct === 'DESCARGA' ? ' ' + kg(a.mag) : ct === 'DESCARGA_TOTAL' ? ` todo (${kg(a.mag)})` : ''} en <b>${esc(nom(a.destino_ubicacion_id))}</b>`; };
   const resumenHoras = () => { const por = (f) => acts.filter(f).reduce((t, a) => t + minutos(a), 0), ini = hm(acts[0]?.hora_inicio_plan), fin = hm(acts[acts.length - 1]?.hora_fin_plan); return acts.length && ini != null && fin != null ? `Jornada ${acts[0].hora_inicio_plan}–${acts[acts.length - 1].hora_fin_plan} (${durTxt(fin - ini)} h) · manejo ${durTxt(por(esViaje))} · carga/descarga ${durTxt(por((a) => !esViaje(a) && a.tipo !== 'ESPERA' && a.tipo !== 'OTRO'))} · pausas ${durTxt(por((a) => a.tipo === 'ESPERA'))}` : ''; };
   const SEM_E = { VERDE: '🟢', AMARILLO: '🟡', ROJO: '🔴' };
@@ -761,7 +776,7 @@ function itinEditor(box, it, ubs, pend, edit, ej) {
       ${edit ? `<div class="row" style="margin:8px 0"><button class="btn pri" id="addf">＋ Agregar fila</button><button class="btn" id="add">🧭 Asistente de paradas</button>${libres.length ? `<button class="btn" id="ped">🧾 Pedidos aprobados (${libres.length})</button>` : ''}<button class="btn" id="xl">📥 Pegar desde Excel</button><button class="btn" id="cop">📋 Copiar de otro día</button></div>` : ''}
       <div style="margin-top:6px">${vista === 'tabla' ? tabla : acts.map(tarjeta).join('') || `<div class="empty"><span class="i">🧭</span><b>Aún no hay paradas</b><p>Toque “＋ Agregar fila” o use el asistente.</p></div>`}</div>
       ${(msgs.errores || []).map((e) => `<div class="err">✖ ${esc(e)}</div>`).join('')}${(msgs.advertencias || []).map((e) => `<div class="mut">⚠ ${esc(e)}</div>`).join('')}${msgs.ok ? `<div class="ok-t">${esc(msgs.ok)}</div>` : ''}
-      <div class="row" style="margin-top:14px">${edit ? '<button class="btn lg" id="save">💾 Guardar borrador</button><button class="btn ok lg" id="apr">✅ Aprobar plan</button>' : ''}<button class="btn" id="rmap">🗺️ Ver ruta en el mapa</button><button class="btn" id="ver">🕘 Ver versiones</button></div><div id="vers"></div></div>`;
+      <div class="row" style="margin-top:14px">${edit ? '<button class="btn lg" id="save">💾 Guardar borrador</button><button class="btn ok lg" id="apr">✅ Aprobar plan</button>' : ''}<button class="btn" id="rmap">🗺️ Ver ruta en el mapa</button><button class="btn" id="img">🖼️ Descargar imagen (PNG/JPG)</button><button class="btn" id="ver">🕘 Ver versiones</button></div><div id="vers"></div></div>`;
     box.querySelectorAll('input[name=vp]').forEach((r) => (r.onchange = () => { vista = state.vistaPlan = r.value; draw(); }));
     box.querySelectorAll('[data-ed]').forEach((b) => (b.onclick = () => editarParada(+b.dataset.ed)));
     box.querySelectorAll('[data-up]').forEach((b) => (b.onclick = () => { const i = +b.dataset.up; if (i > 0) { const t = acts[i - 1]; acts[i - 1] = acts[i]; acts[i] = t; const d1 = minutos(acts[i - 1]), d2 = minutos(acts[i]), h = acts[i - 1].hora_inicio_plan; if (cadena) { acts[i].hora_inicio_plan = acts[i - 1].hora_inicio_plan; } void d1; void d2; void h; reordenarHoras(i - 1); draw(); } }));
@@ -789,6 +804,7 @@ function itinEditor(box, it, ubs, pend, edit, ej) {
     if ($('#addf', box)) $('#addf', box).onclick = () => { const p = posActual() || null, ini = finActual(); acts.push(nuevaAct('CARGA', p, p, 'CARGA', 0, '', ini, 30)); draw(); box.querySelector('tr:last-child [data-f=rt]')?.focus(); };
     if ($('#add', box)) $('#add', box).onclick = elegirParada; if ($('#ped', box)) $('#ped', box).onclick = elegirPedidos; if ($('#xl', box)) $('#xl', box).onclick = pegarExcel; if ($('#cop', box)) $('#cop', box).onclick = copiarOtroDia;
     $('#rmap', box).onclick = rutaMapa;
+    $('#img', box).onclick = imagenPlan;
     const guardar = async () => {
       recalcular(); const f = acts.findIndex((a) => !a.actividad?.trim());
       acts.forEach((a) => { if (!a.actividad?.trim()) a.actividad = esViaje(a) ? `Viaje a ${nom(a.destino_ubicacion_id)}` : a.tipo === 'ESPERA' ? 'Almuerzo / pausa' : `${(RT.find((x) => x[0] === rtDe(a)) || [0, 'Tarea'])[1].replace(/^\S+\s/, '')} en ${nom(a.destino_ubicacion_id)}`; }); void f;
@@ -869,6 +885,7 @@ async function reportesView(m) {
   const sol = r.solicitudes, maxC = Math.max(1, ...r.causas.map((c) => c.n));
   const tsv = ['Fecha\tVehículo\tChofer\tEstado\tPlanificadas\tEjecutadas\tCumplimiento %\tRetraso prom. (min)\tKm planificados\tKm reales', ...r.filas.map((f) => [f.fecha, f.vehiculo, f.chofer, f.estado, f.planificadas, f.ejecutadas, f.cumplimiento ?? '', f.retraso_prom ?? '', f.km_plan, f.km_real].join('\t'))].join('\n');
   m.innerHTML = pageHead('reportes', '<button class="btn" id="copiar">📋 Copiar para Excel</button><button class="btn" id="imp">🖨️ Imprimir</button>', `Del <b>${esc(desde)}</b> al <b>${esc(hasta)}</b>`)
+    + `<div class="card flat row"><b>📊 Reporte del día (plan vs ejecutado)</b><input type="date" id="rdf" value="${state.repDia || today()}" style="width:auto"><button class="btn pri" id="rdb">Ver y descargar imagen</button><span class="mut sm">Se genera y se guarda solo cada día a las ${HORA_REPORTE}:00 mientras la app esté abierta (o al abrirla). Compara tiempos, retrasos, pérdidas, cambios y vacíos.</span></div>`
     + `<div class="chips">${PERIODOS.map(([k, tx]) => `<button data-p="${k}" class="${k === per ? 'on' : ''}">${tx}</button>`).join('')}</div>`
     + (per === 'custom' ? `<div class="card flat row"><label style="margin:0">Desde</label><input type="date" id="d1" value="${desde}" style="width:auto"><label style="margin:0">Hasta</label><input type="date" id="d2" value="${hasta}" style="width:auto"><button class="btn pri" id="aplicar">Ver</button></div>` : '')
     + (!t.itinerarios ? vacio('📊', 'No hay datos en este período', 'Los indicadores aparecen cuando hay itinerarios aprobados y jornadas ejecutadas. Pruebe con otro período.') : `
@@ -886,6 +903,7 @@ async function reportesView(m) {
   if ($('#aplicar')) $('#aplicar').onclick = () => { state.repCustom = { desde: $('#d1').value, hasta: $('#d2').value }; render(); };
   m.querySelectorAll('[data-ver]').forEach((b) => (b.onclick = () => { state.ejItin = b.dataset.ver; state.planFecha = b.dataset.f; state.view = 'ejecucion'; window.scrollTo(0, 0); render(); }));
   $('#imp').onclick = () => window.print();
+  $('#rdb').onclick = () => { state.repDia = $('#rdf').value || today(); verReporteDia(state.repDia); };
   $('#copiar').onclick = async () => { try { await navigator.clipboard.writeText(tsv); toast('📋 Copiado. Péguelo en Excel o Google Sheets.'); } catch { toast('No se pudo copiar en este dispositivo'); } };
 }
 
@@ -1081,3 +1099,171 @@ function cargaCombustible() {
 }
 
 render();
+
+// ---------- Imágenes PNG/JPG y reporte diario (plan vs ejecutado) ----------
+const FUENTE = '"Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+const dm = (min) => { min = Math.round(min || 0); const s = min < 0 ? '−' : '', a = Math.abs(min); return a < 60 ? `${s}${a} min` : `${s}${Math.floor(a / 60)} h ${String(a % 60).padStart(2, '0')}`; };
+const signo = (n) => (n == null ? '—' : n > 0 ? `+${n}` : n < 0 ? `−${Math.abs(n)}` : '0');
+const blobB64 = (b) => new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(',')[1]); r.onerror = ko; r.readAsDataURL(b); });
+const aBlob = (cv, fmt) => new Promise((ok) => cv.toBlob(ok, fmt === 'jpg' ? 'image/jpeg' : 'image/png', 0.92));
+
+// Guarda el archivo: en el teléfono lo escribe en Documentos/LogistikControl (y, si es manual, abre “Compartir”); en el navegador lo descarga.
+async function guardarArchivo(blob, nombre, { compartir = false } = {}) {
+  const P = window.Capacitor?.Plugins;
+  if (window.Capacitor?.isNativePlatform?.() && P?.Filesystem) {
+    const data = await blobB64(blob); let uri = null, donde = '';
+    try { uri = (await P.Filesystem.writeFile({ path: 'LogistikControl/' + nombre, data, directory: 'DOCUMENTS', recursive: true })).uri; donde = 'Documentos/LogistikControl'; }
+    catch { try { uri = (await P.Filesystem.writeFile({ path: nombre, data, directory: 'EXTERNAL', recursive: true })).uri; donde = 'Android/data/bo.logistik.control/files'; } catch { /* sin permiso de escritura */ } }
+    if (compartir && uri && P.Share) { try { await P.Share.share({ title: nombre, files: [uri], dialogTitle: 'Guardar o enviar' }); } catch { /* cancelado */ } }
+    return uri ? donde : null;
+  }
+  const url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = nombre; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
+  return 'Descargas';
+}
+
+// Dibuja una lista de bloques (título, indicadores, encabezados, tablas y notas) sobre un canvas listo para exportar.
+function dibujarImagen(bloques, W = 1500, esc = 1.5) {
+  const M = 30, F = (px, b) => `${b ? '700 ' : ''}${px}px ${FUENTE}`, medir = document.createElement('canvas').getContext('2d');
+  const partir = (ctx, txt, w) => { const out = []; for (const p of String(txt ?? '').split('\n')) { let l = ''; for (const pal of p.split(' ')) { const t = l ? l + ' ' + pal : pal; if (ctx.measureText(t).width > w && l) { out.push(l); l = pal; } else l = t; } out.push(l); } return out; };
+  const pasada = (ctx, dib) => {
+    let y = 0;
+    for (const b of bloques) {
+      if (b.t === 'titulo') {
+        if (dib) { const g = ctx.createLinearGradient(0, 0, W, 0); g.addColorStop(0, '#1e3a8a'); g.addColorStop(1, '#2563eb'); ctx.fillStyle = g; ctx.fillRect(0, y, W, 96); ctx.fillStyle = '#fff'; ctx.font = F(30, 1); ctx.textBaseline = 'alphabetic'; ctx.fillText(b.texto, M, y + 42); ctx.font = F(16); ctx.fillStyle = '#dbeafe'; ctx.fillText(b.sub || '', M, y + 72); }
+        y += 96 + 18;
+      } else if (b.t === 'kpis') {
+        const n = Math.min(b.items.length, b.por || 5), gap = 12, w = (W - 2 * M - gap * (n - 1)) / n;
+        b.items.forEach((k, i) => { if (dib) { const x = M + (i % n) * (w + gap), yy = y + Math.floor(i / n) * 84; ctx.fillStyle = '#f1f5f9'; ctx.fillRect(x, yy, w, 74); ctx.fillStyle = k.c || '#2563eb'; ctx.fillRect(x, yy, 5, 74); ctx.fillStyle = '#64748b'; ctx.font = F(13); ctx.fillText(k.l, x + 16, yy + 22); ctx.fillStyle = k.c || '#0f172a'; ctx.font = F(25, 1); ctx.fillText(k.v, x + 16, yy + 50); if (k.s) { ctx.fillStyle = '#64748b'; ctx.font = F(12); ctx.fillText(k.s, x + 16, yy + 67); } } });
+        y += Math.ceil(b.items.length / n) * 84 + 10;
+      } else if (b.t === 'h') {
+        y += 8; if (dib) { ctx.fillStyle = '#0f172a'; ctx.font = F(20, 1); ctx.fillText(b.texto, M, y + 22); if (b.sub) { const tw = ctx.measureText(b.texto).width; ctx.fillStyle = '#64748b'; ctx.font = F(14); ctx.fillText(b.sub, M + tw, y + 22); } }
+        y += 36;
+      } else if (b.t === 'nota') {
+        ctx.font = F(b.px || 14, b.b); const ls = partir(ctx, b.texto, W - 2 * M);
+        if (dib) { ctx.fillStyle = b.c || '#475569'; ls.forEach((l, i) => ctx.fillText(l, M, y + 16 + i * 20)); }
+        y += ls.length * 20 + 12;
+      } else if (b.t === 'tabla') {
+        const tot = W - 2 * M, ws = b.cols.map((c) => c.w * tot), pad = 8, lh = 18; let x0 = M;
+        ctx.font = F(13, 1); const ch = Math.max(...b.cols.map((c, i) => partir(ctx, c.h, ws[i] - 2 * pad).length)) * lh + 14;
+        if (dib) { ctx.fillStyle = '#e0e7ff'; ctx.fillRect(M, y, tot, ch); ctx.fillStyle = '#1e293b'; ctx.font = F(13, 1); x0 = M; b.cols.forEach((c, i) => { const ls = partir(ctx, c.h, ws[i] - 2 * pad); ls.forEach((l, k) => { const tw = ctx.measureText(l).width; ctx.fillText(l, c.a === 'r' ? x0 + ws[i] - pad - tw : c.a === 'c' ? x0 + (ws[i] - tw) / 2 : x0 + pad, y + 18 + k * lh); }); x0 += ws[i]; }); }
+        y += ch;
+        b.filas.forEach((f, ri) => {
+          ctx.font = F(14); const celdas = f.map((c) => (c && typeof c === 'object' ? c : { t: c })), alto = Math.max(...celdas.map((c, i) => partir(ctx, c.t, ws[i] - 2 * pad).length)) * lh + 14;
+          if (dib) {
+            ctx.fillStyle = f.bg || (ri % 2 ? '#f8fafc' : '#fff'); ctx.fillRect(M, y, tot, alto); x0 = M;
+            celdas.forEach((c, i) => { if (c.bg) { ctx.fillStyle = c.bg; ctx.fillRect(x0, y, ws[i], alto); } ctx.fillStyle = c.c || '#0f172a'; ctx.font = F(14, c.b); partir(ctx, c.t, ws[i] - 2 * pad).forEach((l, k) => { const tw = ctx.measureText(l).width, a = b.cols[i].a; ctx.fillText(l, a === 'r' ? x0 + ws[i] - pad - tw : a === 'c' ? x0 + (ws[i] - tw) / 2 : x0 + pad, y + 19 + k * lh); }); x0 += ws[i]; });
+            ctx.strokeStyle = '#e2e8f0'; ctx.beginPath(); ctx.moveTo(M, y + alto - 0.5); ctx.lineTo(M + tot, y + alto - 0.5); ctx.stroke();
+          }
+          y += alto;
+        });
+        if (!b.filas.length) { if (dib) { ctx.fillStyle = '#64748b'; ctx.font = F(14); ctx.fillText(b.vacio || 'Sin datos', M + 8, y + 22); } y += 34; }
+        y += 16;
+      }
+    }
+    return y + 22;
+  };
+  medir.font = F(14);
+  const H = pasada(medir, false), cv = document.createElement('canvas');
+  cv.width = Math.round(W * esc); cv.height = Math.round(H * esc);
+  const ctx = cv.getContext('2d'); ctx.scale(esc, esc); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H); pasada(ctx, true);
+  ctx.fillStyle = '#94a3b8'; ctx.font = F(12); ctx.fillText('Logistik Control · generado ' + new Date().toLocaleString('es-BO'), M, H - 8);
+  return cv;
+}
+
+// Vista previa con botones para bajar PNG o JPG
+function verImagen(titulo, cv, base) {
+  ventana(titulo, `<div id="pvbox" style="max-height:62vh;overflow:auto;border:1px solid var(--line,#e2e8f0);border-radius:8px"></div>
+    <p class="mut sm" style="margin:8px 0">Elija el formato. PNG es más nítido; JPG pesa menos para enviar por WhatsApp.</p>
+    <div class="bar"><button class="btn" id="no">Cerrar</button><button class="btn" id="jpg">⬇️ Descargar JPG</button><button class="btn pri lg" id="png">⬇️ Descargar PNG</button></div>`, (m, close) => {
+    cv.style.cssText = 'width:100%;display:block'; $('#pvbox', m).appendChild(cv);
+    $('#no', m).onclick = close;
+    for (const f of ['png', 'jpg']) $('#' + f, m).onclick = async () => { const donde = await guardarArchivo(await aBlob(cv, f), `${base}.${f}`, { compartir: true }); toast(donde ? `✅ ${base}.${f} guardado en ${donde}` : 'No se pudo guardar el archivo en este dispositivo'); };
+  });
+}
+
+const TIPO_TXT = { VIAJE: 'Viaje', CARGA: 'Carga', DESCARGA: 'Descarga', RECOJO: 'Recojo', ENTREGA: 'Entrega', ENTREGA_VEHICULO: 'Entrega del vehículo', ESPERA: 'Pausa / almuerzo', OTRO: 'Otra tarea' };
+const colDesv = (d) => (d == null ? '#64748b' : d > 30 ? '#dc2626' : d > 10 ? '#d97706' : '#16a34a');
+
+// Reporte diario: lo planificado contra lo ejecutado
+function bloquesReporteDia(r) {
+  const t = r.totales, ya = r.fecha < today() || new Date().getHours() >= 19;
+  const EST = { FINALIZADA: ['Hecha', '#16a34a'], OMITIDA: ['Omitida', '#d97706'], EN_CURSO: ['En curso', '#2563eb'], PENDIENTE: [ya ? 'No realizada' : 'Pendiente', ya ? '#dc2626' : '#64748b'] };
+  const bl = [{ t: 'titulo', texto: 'Reporte del día · Planificado vs Ejecutado', sub: `${fechaLarga(r.fecha)} · generado ${new Date(r.generado_en).toLocaleString('es-BO')}` }];
+  if (!r.itinerarios.length) return [...bl, { t: 'nota', texto: 'No hay itinerarios aprobados para este día.', px: 16 }];
+  const dif = t.real_total_min - t.plan_total_min;
+  bl.push({ t: 'kpis', items: [
+    { l: 'Cumplimiento', v: t.cumplimiento == null ? '—' : t.cumplimiento + '%', s: `${t.finalizadas} de ${t.actividades} actividades`, c: t.cumplimiento >= 90 ? '#16a34a' : t.cumplimiento >= 70 ? '#d97706' : '#dc2626' },
+    { l: 'Tiempo planificado', v: dm(t.plan_total_min), s: 'suma de las actividades' },
+    { l: 'Tiempo real', v: dm(t.real_total_min), s: `${signo(dif)} min vs plan`, c: dif > 30 ? '#dc2626' : dif > 10 ? '#d97706' : '#16a34a' },
+    { l: 'Actividades con retraso', v: String(t.con_retraso), s: 'más de 10 min tarde', c: t.con_retraso ? '#d97706' : '#16a34a' },
+    { l: 'Pérdidas registradas', v: dm(t.perdidas_min), s: 'por incidencias', c: t.perdidas_min ? '#dc2626' : '#16a34a' },
+    { l: 'Vacíos (tiempo muerto)', v: dm(t.vacios_real_min), s: `plan: ${dm(t.vacios_plan_min)}`, c: t.vacios_real_min > t.vacios_plan_min ? '#d97706' : '#2563eb' },
+    { l: 'No realizadas', v: String(t.omitidas + t.pendientes), s: `${t.omitidas} omitidas · ${t.pendientes} sin ejecutar`, c: t.omitidas + t.pendientes ? '#dc2626' : '#16a34a' },
+    { l: 'Cambios al plan', v: String(t.cambios), s: `+${t.anadidas} · −${t.quitadas} · ${t.reprogramadas} reprogramadas`, c: t.cambios ? '#d97706' : '#16a34a' },
+    { l: 'Kilómetros', v: `${t.km_real} km`, s: `estimado del plan: ${t.km_plan} km` },
+    { l: 'Vehículos', v: String(t.itinerarios), s: 'con plan aprobado' },
+  ], por: 5 });
+  for (const it of r.itinerarios) {
+    const s = it.resumen;
+    bl.push({ t: 'h', texto: `${it.vehiculo} · ${it.chofer}`, sub: `  ${ESTADO_TXT[it.estado] || it.estado} · plan v${it.version}` });
+    const lect = [];
+    lect.push(`Hizo ${s.finalizadas} de ${s.actividades} actividades (${s.cumplimiento ?? 0}%)${s.omitidas ? `, omitió ${s.omitidas}` : ''}${s.pendientes + s.en_curso ? `, quedaron ${s.pendientes + s.en_curso} sin completar` : ''}.`);
+    if (s.real_inicio) lect.push(`Salió a las ${s.real_inicio} (plan ${s.plan_inicio}: ${signo(s.retraso_inicio_min)} min) y terminó a las ${s.real_fin || '—'} (plan ${s.plan_fin}: ${signo(s.retraso_cierre_min)} min).`);
+    if (s.perdidas_min) lect.push(`Se perdieron ${dm(s.perdidas_min)}: ${s.causas.filter((c) => c.minutos).map((c) => `${CAUSA_TXT[c.tipo] || c.tipo} ${c.minutos} min`).join(', ')}.`);
+    if (s.cambios) lect.push(`El plan cambió ${s.cambios} vez/veces después de aprobarse: ${s.anadidas} añadidas, ${s.quitadas} quitadas, ${s.reprogramadas} reprogramadas.`);
+    bl.push({ t: 'nota', texto: lect.join(' '), px: 14 });
+    bl.push({
+      t: 'tabla', cols: [{ h: 'N', w: 0.03, a: 'c' }, { h: 'Actividad', w: 0.26 }, { h: 'Plan', w: 0.1, a: 'c' }, { h: 'Dur. plan', w: 0.07, a: 'r' }, { h: 'Real', w: 0.1, a: 'c' }, { h: 'Dur. real', w: 0.07, a: 'r' }, { h: 'Desv. fin (min)', w: 0.08, a: 'r' }, { h: 'Estado', w: 0.09, a: 'c' }, { h: 'Kg plan / real', w: 0.09, a: 'r' }, { h: 'Pérdidas / observaciones', w: 0.11 }],
+      filas: it.filas.map((f) => { const [et, ec] = EST[f.estado] || EST.PENDIENTE; return [
+        String(f.n), { t: `${TIPO_TXT[f.tipo] || f.tipo}: ${f.actividad || ''}${f.destino && f.tipo !== 'VIAJE' ? ` (${f.destino})` : ''}`, b: false },
+        `${f.plan_ini}–${f.plan_fin}`, dm(f.plan_min), f.real_ini ? `${f.real_ini}–${f.real_fin || '…'}` : '—', f.real_min != null ? dm(f.real_min) : '—',
+        { t: signo(f.desv_fin), c: colDesv(f.desv_fin), b: true }, { t: et, c: ec, b: true },
+        f.kg_plan || f.kg_real ? `${Math.round(f.kg_plan)} / ${f.kg_real != null ? Math.round(f.kg_real) : '—'}` : '',
+        { t: [f.perdidos_min ? `−${f.perdidos_min} min` : '', ...(f.incidencias || []).map((x) => CAUSA_TXT[x] || x), f.fuera_geocerca ? 'fuera del punto' : ''].filter(Boolean).join(' · '), c: '#b45309' },
+      ]; }),
+    });
+    if (it.vacios.length) bl.push({ t: 'tabla', cols: [{ h: 'Vacío entre actividades', w: 0.4 }, { h: 'Previsto en el plan', w: 0.3, a: 'r' }, { h: 'Ocurrido realmente', w: 0.3, a: 'r' }], filas: it.vacios.map((v) => [`Actividad ${v.entre.replace('→', ' → ')}`, dm(v.plan_min), v.real_min == null ? 'sin ejecutar' : { t: dm(v.real_min), c: v.real_min > v.plan_min ? '#d97706' : '#0f172a', b: v.real_min > v.plan_min }]) });
+    if (it.cambios.length) bl.push({ t: 'tabla', cols: [{ h: 'Cambio al plan', w: 0.1, a: 'c' }, { h: 'Motivo', w: 0.5 }, { h: 'Quién', w: 0.2 }, { h: 'Cuándo', w: 0.2 }], filas: it.cambios.map((c) => ['v' + c.version, c.motivo || '—', c.usuario || '—', new Date(c.cuando).toLocaleString('es-BO')]) });
+  }
+  return bl;
+}
+
+async function generarReporteDia(fecha) {
+  const r = await api('GET', '/reportes/dia?fecha=' + fecha);
+  return { r, cv: dibujarImagen(bloquesReporteDia(r)) };
+}
+async function verReporteDia(fecha) {
+  try { const { cv } = await generarReporteDia(fecha); verImagen('Reporte del día ' + fecha, cv, 'Reporte-' + fecha); } catch (e) { toast(e.message); }
+}
+
+// Descarga automática a las 19:00: la app, mientras está abierta (o la próxima vez que se abra), genera y guarda el reporte del día.
+const HORA_REPORTE = 19;
+let repIniciado = false;
+async function revisarReporteDiario() {
+  if (!state.token || !state.user || !['ADMIN', 'PLANIFICADOR', 'CONSULTA'].includes(state.user.rol)) return;
+  const fecha = new Date().getHours() >= HORA_REPORTE ? today() : today(-1), k = 'lc_rep_' + fecha;
+  try { if (localStorage.getItem(k)) return; } catch { /* sin almacenamiento */ }
+  try {
+    const { r, cv } = await generarReporteDia(fecha);
+    try { localStorage.setItem(k, '1'); } catch { /* ignorar */ }
+    if (!r.itinerarios.length) return;
+    const donde = await guardarArchivo(await aBlob(cv, 'png'), `Reporte-${fecha}.png`);
+    toast(donde ? `📊 Reporte del ${fecha} guardado en ${donde}` : '📊 Reporte del día listo (no se pudo guardar el archivo)');
+  } catch { /* se reintenta en el próximo minuto */ }
+}
+async function programarAvisoNativo() {
+  const LN = window.Capacitor?.Plugins?.LocalNotifications;
+  if (!window.Capacitor?.isNativePlatform?.() || !LN) return;
+  try {
+    const p = await LN.requestPermissions(); if (p.display !== 'granted') return;
+    await LN.cancel({ notifications: [{ id: 1900 }] });
+    await LN.schedule({ notifications: [{ id: 1900, title: '📊 Reporte del día listo', body: 'Toque para abrir Logistik Control: se genera y guarda el reporte planificado vs ejecutado.', schedule: { on: { hour: HORA_REPORTE, minute: 0 }, allowWhileIdle: true } }] });
+  } catch { /* sin permiso de notificaciones */ }
+}
+function iniciarReporteDiario() {
+  if (repIniciado || !['ADMIN', 'PLANIFICADOR', 'CONSULTA'].includes(state.user?.rol)) return;
+  repIniciado = true; setTimeout(revisarReporteDiario, 4000); setInterval(revisarReporteDiario, 60000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) revisarReporteDiario(); });
+  programarAvisoNativo();
+}
