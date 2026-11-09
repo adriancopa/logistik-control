@@ -885,7 +885,7 @@ async function reportesView(m) {
   const sol = r.solicitudes, maxC = Math.max(1, ...r.causas.map((c) => c.n));
   const tsv = ['Fecha\tVehículo\tChofer\tEstado\tPlanificadas\tEjecutadas\tCumplimiento %\tRetraso prom. (min)\tKm planificados\tKm reales', ...r.filas.map((f) => [f.fecha, f.vehiculo, f.chofer, f.estado, f.planificadas, f.ejecutadas, f.cumplimiento ?? '', f.retraso_prom ?? '', f.km_plan, f.km_real].join('\t'))].join('\n');
   m.innerHTML = pageHead('reportes', '<button class="btn" id="copiar">📋 Copiar para Excel</button><button class="btn" id="imp">🖨️ Imprimir</button>', `Del <b>${esc(desde)}</b> al <b>${esc(hasta)}</b>`)
-    + `<div class="card flat row"><b>📊 Reporte del día (plan vs ejecutado)</b><input type="date" id="rdf" value="${state.repDia || today()}" style="width:auto"><button class="btn pri" id="rdb">Ver y descargar imagen</button><span class="mut sm">Se genera y se guarda solo cada día a las ${HORA_REPORTE}:00 mientras la app esté abierta (o al abrirla). Compara tiempos, retrasos, pérdidas, cambios y vacíos.</span></div>`
+    + `<div class="card flat row"><b>📊 Reporte del día (plan vs ejecutado)</b><input type="date" id="rdf" value="${state.repDia || today()}" style="width:auto"><button class="btn pri" id="rdb">Ver y descargar imagen</button><button class="btn" id="rsb">📅 Reporte semanal</button><span class="mut sm">El diario se genera y se guarda solo cada día a las ${HORA_REPORTE}:00, y el semanal los domingos a las ${HORA_REPORTE}:00, mientras la app esté abierta (o al abrirla). Comparan lo planificado con lo ejecutado: tiempos, retrasos, pérdidas, cambios, vacíos, principales paradas y problemas. El botón semanal usa la fecha elegida para tomar su semana (lunes a domingo).</span></div>`
     + `<div class="chips">${PERIODOS.map(([k, tx]) => `<button data-p="${k}" class="${k === per ? 'on' : ''}">${tx}</button>`).join('')}</div>`
     + (per === 'custom' ? `<div class="card flat row"><label style="margin:0">Desde</label><input type="date" id="d1" value="${desde}" style="width:auto"><label style="margin:0">Hasta</label><input type="date" id="d2" value="${hasta}" style="width:auto"><button class="btn pri" id="aplicar">Ver</button></div>` : '')
     + (!t.itinerarios ? vacio('📊', 'No hay datos en este período', 'Los indicadores aparecen cuando hay itinerarios aprobados y jornadas ejecutadas. Pruebe con otro período.') : `
@@ -904,6 +904,7 @@ async function reportesView(m) {
   m.querySelectorAll('[data-ver]').forEach((b) => (b.onclick = () => { state.ejItin = b.dataset.ver; state.planFecha = b.dataset.f; state.view = 'ejecucion'; window.scrollTo(0, 0); render(); }));
   $('#imp').onclick = () => window.print();
   $('#rdb').onclick = () => { state.repDia = $('#rdf').value || today(); verReporteDia(state.repDia); };
+  $('#rsb').onclick = () => { state.repDia = $('#rdf').value || today(); verReporteSemana(state.repDia); };
   $('#copiar').onclick = async () => { try { await navigator.clipboard.writeText(tsv); toast('📋 Copiado. Péguelo en Excel o Google Sheets.'); } catch { toast('No se pudo copiar en este dispositivo'); } };
 }
 
@@ -1263,7 +1264,62 @@ async function programarAvisoNativo() {
 }
 function iniciarReporteDiario() {
   if (repIniciado || !['ADMIN', 'PLANIFICADOR', 'CONSULTA'].includes(state.user?.rol)) return;
-  repIniciado = true; setTimeout(revisarReporteDiario, 4000); setInterval(revisarReporteDiario, 60000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) revisarReporteDiario(); });
+  repIniciado = true; const ciclo = async () => { await revisarReporteDiario(); await revisarReporteSemanal(); };
+  setTimeout(ciclo, 4000); setInterval(ciclo, 60000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) ciclo(); });
   programarAvisoNativo();
+}
+
+// ---------- Reporte semanal: plan vs ejecución, principales paradas y problemas ----------
+const DIA_CORTO = ['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'];
+function bloquesReporteSemana(r) {
+  const t = r.totales, dif = t.real_min - t.plan_min, bl = [{ t: 'titulo', texto: 'Reporte semanal · Planificado vs Ejecutado', sub: `Semana del ${r.desde} al ${r.hasta} · generado ${new Date(r.generado_en).toLocaleString('es-BO')}` }];
+  if (!t.planificadas) return [...bl, { t: 'nota', texto: 'No hubo itinerarios aprobados en esta semana.', px: 16 }];
+  bl.push({ t: 'kpis', por: 5, items: [
+    { l: 'Cumplimiento semanal', v: t.cumplimiento == null ? '—' : t.cumplimiento + '%', s: `${t.ejecutadas} de ${t.planificadas} actividades`, c: t.cumplimiento >= 90 ? '#16a34a' : t.cumplimiento >= 70 ? '#d97706' : '#dc2626' },
+    { l: 'Tiempo planificado', v: dm(t.plan_min), s: `${t.itinerarios} itinerarios` },
+    { l: 'Tiempo real', v: dm(t.real_min), s: `${signo(dif)} min vs plan`, c: dif > 60 ? '#dc2626' : dif > 20 ? '#d97706' : '#16a34a' },
+    { l: 'Retraso promedio', v: t.retraso_prom == null ? '—' : signo(t.retraso_prom) + ' min', s: `${t.con_retraso} actividades con más de 10 min`, c: colDesv(t.retraso_prom) },
+    { l: 'Pérdidas por incidencias', v: dm(t.perdidas_min), s: `${t.incidencias} incidencias`, c: t.perdidas_min ? '#dc2626' : '#16a34a' },
+    { l: 'No realizadas', v: String(t.planificadas - t.ejecutadas), s: `${t.omitidas} omitidas`, c: t.planificadas - t.ejecutadas ? '#dc2626' : '#16a34a' },
+    { l: 'Cambios al plan', v: String(t.cambios), s: 'versiones tras aprobar', c: t.cambios ? '#d97706' : '#16a34a' },
+    { l: 'Kilómetros', v: `${t.km_real} km`, s: `plan estimado ${t.km_plan} km` },
+    { l: 'Fuera del punto', v: String(t.fuera_geocerca), s: 'llegadas fuera de geocerca', c: t.fuera_geocerca ? '#d97706' : '#16a34a' },
+    { l: 'Vehículos con plan', v: String(r.vehiculos.length) },
+  ] });
+  const lect = [`La semana cerró con ${t.cumplimiento}% de cumplimiento (${t.ejecutadas}/${t.planificadas}).`];
+  if (r.peores_dias[0] && r.peores_dias[0].cumplimiento < 100) lect.push(`El día más débil fue el ${DIA_CORTO[(new Date(r.peores_dias[0].fecha + 'T00:00:00Z').getUTCDay() + 6) % 7]} ${r.peores_dias[0].fecha} (${r.peores_dias[0].cumplimiento}%).`);
+  if (r.causas[0]?.minutos) lect.push(`La principal causa de pérdida fue ${CAUSA_TXT[r.causas[0].tipo] || r.causas[0].tipo} (${r.causas[0].minutos} min en ${r.causas[0].n} incidencia/s).`);
+  if (r.lugares_retraso[0]) lect.push(`El lugar con más retraso fue ${r.lugares_retraso[0].lugar} (+${r.lugares_retraso[0].retraso_prom} min en promedio).`);
+  bl.push({ t: 'nota', texto: lect.join(' '), px: 15, b: true, c: '#0f172a' });
+  bl.push({ t: 'h', texto: 'Planificado vs ejecutado por día' });
+  bl.push({ t: 'tabla', cols: [{ h: 'Día', w: 0.14 }, { h: 'Itin.', w: 0.06, a: 'r' }, { h: 'Actividades plan', w: 0.1, a: 'r' }, { h: 'Hechas', w: 0.08, a: 'r' }, { h: 'Cumpl.', w: 0.08, a: 'r' }, { h: 'Tiempo plan', w: 0.11, a: 'r' }, { h: 'Tiempo real', w: 0.11, a: 'r' }, { h: 'Diferencia', w: 0.1, a: 'r' }, { h: 'Con retraso', w: 0.08, a: 'r' }, { h: 'Retraso prom.', w: 0.08, a: 'r' }, { h: 'Km real', w: 0.06, a: 'r' }],
+    filas: r.dias.map((d, i) => d.planificadas ? [`${DIA_CORTO[i]} ${d.fecha.slice(5)}`, String(d.itinerarios), String(d.planificadas), String(d.ejecutadas), { t: d.cumplimiento + '%', c: d.cumplimiento >= 90 ? '#16a34a' : d.cumplimiento >= 70 ? '#d97706' : '#dc2626', b: true }, dm(d.plan_min), dm(d.real_min), { t: dm(d.real_min - d.plan_min), c: d.real_min - d.plan_min > 20 ? '#d97706' : '#0f172a' }, String(d.con_retraso), { t: d.retraso_prom == null ? '—' : signo(d.retraso_prom) + ' min', c: colDesv(d.retraso_prom), b: true }, String(d.km_real)] : [`${DIA_CORTO[i]} ${d.fecha.slice(5)}`, { t: 'sin plan', c: '#94a3b8' }, '', '', '', '', '', '', '', '', '']) });
+  bl.push({ t: 'h', texto: 'Principales paradas', sub: '  lugares con más visitas operativas (carga, descarga, entrega)' });
+  bl.push({ t: 'tabla', vacio: 'Sin paradas registradas', cols: [{ h: 'Lugar', w: 0.28 }, { h: 'Visitas', w: 0.08, a: 'r' }, { h: 'Hechas', w: 0.08, a: 'r' }, { h: 'No realizadas', w: 0.1, a: 'r' }, { h: 'Tiempo plan', w: 0.12, a: 'r' }, { h: 'Tiempo real', w: 0.12, a: 'r' }, { h: 'Retraso prom.', w: 0.12, a: 'r' }, { h: 'Kg movidos', w: 0.1, a: 'r' }],
+    filas: r.paradas.map((p) => [p.lugar, String(p.visitas), String(p.hechas), { t: String(p.no_realizadas), c: p.no_realizadas ? '#dc2626' : '#0f172a', b: !!p.no_realizadas }, dm(p.plan_min), p.hechas ? dm(p.real_min) : '—', { t: p.retraso_prom == null ? '—' : signo(p.retraso_prom) + ' min', c: colDesv(p.retraso_prom), b: true }, String(p.kg)]) });
+  if (r.rutas.length) { bl.push({ t: 'h', texto: 'Recorridos más repetidos' }); bl.push({ t: 'tabla', cols: [{ h: 'Ruta', w: 0.4 }, { h: 'Veces', w: 0.1, a: 'r' }, { h: 'Hechos', w: 0.1, a: 'r' }, { h: 'Tiempo plan', w: 0.13, a: 'r' }, { h: 'Tiempo real', w: 0.13, a: 'r' }, { h: 'Retraso prom.', w: 0.14, a: 'r' }], filas: r.rutas.map((x) => [x.ruta, String(x.visitas), String(x.hechas), dm(x.plan_min), x.hechas ? dm(x.real_min) : '—', { t: x.retraso_prom == null ? '—' : signo(x.retraso_prom) + ' min', c: colDesv(x.retraso_prom), b: true }]) }); }
+  bl.push({ t: 'h', texto: 'Principales problemas' });
+  bl.push({ t: 'tabla', vacio: 'Sin incidencias registradas en la semana', cols: [{ h: 'Causa de la incidencia', w: 0.5 }, { h: 'Veces', w: 0.15, a: 'r' }, { h: 'Minutos perdidos', w: 0.2, a: 'r' }, { h: 'Causaron retraso', w: 0.15, a: 'r' }], filas: r.causas.map((c) => [CAUSA_TXT[c.tipo] || c.tipo, String(c.n), { t: dm(c.minutos), c: c.minutos ? '#dc2626' : '#0f172a', b: true }, String(c.retrasos || 0)]) });
+  if (r.lugares_retraso.length) { bl.push({ t: 'h', texto: 'Lugares donde más se atrasa' }); bl.push({ t: 'tabla', cols: [{ h: 'Lugar', w: 0.5 }, { h: 'Visitas hechas', w: 0.2, a: 'r' }, { h: 'Retraso promedio', w: 0.3, a: 'r' }], filas: r.lugares_retraso.map((x) => [x.lugar, String(x.hechas), { t: '+' + x.retraso_prom + ' min', c: colDesv(x.retraso_prom), b: true }]) }); }
+  if (r.no_realizadas.length) { bl.push({ t: 'h', texto: 'Actividades que no se realizaron' }); bl.push({ t: 'tabla', cols: [{ h: 'Lugar / actividad', w: 0.6 }, { h: 'Veces', w: 0.2, a: 'r' }, { h: 'Omitidas por el chofer', w: 0.2, a: 'r' }], filas: r.no_realizadas.map((x) => [x.lugar, String(x.n), String(x.omitidas)]) }); }
+  if (r.cambios.length) { bl.push({ t: 'h', texto: 'Cambios al plan después de aprobarlo' }); bl.push({ t: 'tabla', cols: [{ h: 'Día', w: 0.12 }, { h: 'Vehículo', w: 0.12 }, { h: 'Versión', w: 0.08, a: 'c' }, { h: 'Motivo', w: 0.45 }, { h: 'Quién', w: 0.23 }], filas: r.cambios.map((c) => [c.fecha, c.vehiculo, 'v' + c.version, c.motivo || '—', c.usuario || '—']) }); }
+  bl.push({ t: 'h', texto: 'Por vehículo' });
+  bl.push({ t: 'tabla', cols: [{ h: 'Vehículo', w: 0.2 }, { h: 'Actividades', w: 0.12, a: 'r' }, { h: 'Hechas', w: 0.12, a: 'r' }, { h: 'Cumplimiento', w: 0.14, a: 'r' }, { h: 'Tiempo plan', w: 0.14, a: 'r' }, { h: 'Tiempo real', w: 0.14, a: 'r' }, { h: 'Km real', w: 0.14, a: 'r' }], filas: r.vehiculos.map((v) => [v.vehiculo, String(v.visitas), String(v.hechas), { t: v.cumplimiento + '%', c: v.cumplimiento >= 90 ? '#16a34a' : v.cumplimiento >= 70 ? '#d97706' : '#dc2626', b: true }, dm(v.plan_min), dm(v.real_min), String(v.km_real)]) });
+  return bl;
+}
+const lunesDe = (f) => { const d = new Date(f + 'T00:00:00Z'); return new Date(d.getTime() - ((d.getUTCDay() + 6) % 7) * 864e5).toISOString().slice(0, 10); };
+async function generarReporteSemana(fecha) { const r = await api('GET', '/reportes/semana?fecha=' + fecha); return { r, cv: dibujarImagen(bloquesReporteSemana(r)) }; }
+async function verReporteSemana(fecha) { try { const { r, cv } = await generarReporteSemana(fecha); verImagen('Reporte semanal ' + r.desde, cv, 'Reporte-semanal-' + r.desde); } catch (e) { toast(e.message); } }
+async function revisarReporteSemanal() {   // domingo desde las 19:00 (semana en curso) o, si no se generó, la semana anterior al abrir la app
+  if (!state.token || !['ADMIN', 'PLANIFICADOR', 'CONSULTA'].includes(state.user?.rol)) return;
+  const ahora = new Date(), dom = ahora.getDay() === 0 && ahora.getHours() >= HORA_REPORTE, base = dom ? today() : today(-7), lun = lunesDe(base), k = 'lc_rep_sem_' + lun;
+  try { if (localStorage.getItem(k)) return; } catch { /* sin almacenamiento */ }
+  try {
+    const { r, cv } = await generarReporteSemana(base);
+    try { localStorage.setItem(k, '1'); } catch { /* ignorar */ }
+    if (!r.totales.planificadas) return;
+    const donde = await guardarArchivo(await aBlob(cv, 'png'), `Reporte-semanal-${r.desde}.png`);
+    toast(donde ? `📅 Reporte semanal ${r.desde} guardado en ${donde}` : '📅 Reporte semanal listo (no se pudo guardar el archivo)');
+  } catch { /* se reintenta */ }
 }
