@@ -861,6 +861,7 @@ async function seguimientoView(m) {
     mapSeg = crearMapa('segmap');
     const pts = [];
     pos.forEach((f) => { L.marker([f.lat, f.lon], { icon: L.divIcon({ html: '<div style="font-size:30px;filter:drop-shadow(0 2px 3px #0006)">🚚</div>', className: '', iconSize: [34, 34], iconAnchor: [17, 17] }) }).bindPopup(`<b>${esc(f.codigo)}</b> · ${esc(f.chofer)}<br>señal ${esc(hace(f.capturado_en))}`).addTo(mapSeg); pts.push([f.lat, f.lon]); });
+    det.forEach((d) => { if (d?.track?.length) dibujarRecorrido(mapSeg, d.track, pts); });
     det.forEach((d) => { if (!d) return; const a = d.actividades.find((x) => !['FINALIZADA', 'OMITIDA'].includes(x.ej_estado || 'PENDIENTE')); if (a?.destino_lat != null) { L.marker([a.destino_lat, a.destino_lon]).bindPopup(esc(a.actividad)).addTo(mapSeg); pts.push([a.destino_lat, a.destino_lon]); } });
     if (previo) mapSeg.setView(previo.c, previo.z); else if (pts.length) mapSeg.fitBounds(pts, { padding: [40, 40], maxZoom: 15 });
   }
@@ -1012,8 +1013,8 @@ async function ejecucionView(m) {
   const plan = []; d.actividades.forEach((a) => { if (a.origen_lat != null && !plan.length) plan.push([a.origen_lat, a.origen_lon]); if (a.destino_lat != null) { const p = [a.destino_lat, a.destino_lon]; const l = plan[plan.length - 1]; if (!l || l[0] !== p[0] || l[1] !== p[1]) plan.push(p); } });
   const todos = [];
   if (plan.length) { L.polyline(plan, { color: '#1d5fd1', weight: 4, dashArray: '8 6' }).addTo(mapEj); plan.forEach((p, i) => L.circleMarker(p, { radius: 6, color: '#1d5fd1', fillOpacity: 1 }).bindTooltip(String(i + 1)).addTo(mapEj)); todos.push(...plan); }
-  if (d.track.length) { const t = d.track.map((p) => [p.lat, p.lon]); L.polyline(t, { color: '#f08a00', weight: 4 }).addTo(mapEj); todos.push(...t); }
-  flota.forEach((f) => L.marker([f.lat, f.lon], { icon: L.divIcon({ html: '🚚', className: '', iconSize: [24, 24] }) }).bindPopup(`${esc(f.codigo)} · ${esc(f.chofer)}<br>${hora(f.capturado_en)}`).addTo(mapEj));
+  dibujarRecorrido(mapEj, d.track, todos);
+  flota.filter((f) => f.jornada_id === d.jornada?.id).forEach((f) => L.marker([f.lat, f.lon], { icon: L.divIcon({ html: '🚚', className: '', iconSize: [24, 24] }) }).bindPopup(`${esc(f.codigo)} · ${esc(f.chofer)}<br>${hora(f.capturado_en)}`).addTo(mapEj));
   if (previo) mapEj.setView(previo.c, previo.z); else if (todos.length) mapEj.fitBounds(todos, { padding: [30, 30] });
   $('#ejb').querySelectorAll('[data-foto]').forEach((l) => (l.onclick = async (ev) => {
     ev.preventDefault(); ev.stopPropagation();
@@ -1390,4 +1391,27 @@ function bloquesEjecutivoDia(r) {
   bl.push({ t: 'lista', titulo: 'Conclusiones', items: con });
   bl.push({ t: 'barras', titulo: 'Cumplimiento por vehículo', lw: 200, items: r.itinerarios.map((it) => ({ l: it.vehiculo, v: it.resumen.cumplimiento || 0, c: semC(it.resumen.cumplimiento), t: `${it.resumen.cumplimiento ?? 0}% · ${it.resumen.finalizadas}/${it.resumen.actividades}` })) });
   return bl;
+}
+// ---------- Recorrido real (GPS) sobre el mapa ----------
+// Quita saltos imposibles del GPS (más de 140 km/h entre dos puntos o puntos duplicados) para que la línea siga el camino real.
+function limpiarTrack(track) {
+  const rad = (x) => (x * Math.PI) / 180, dist = (a, b) => { const h = Math.sin(rad(b.lat - a.lat) / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(rad(b.lon - a.lon) / 2) ** 2; return 12742000 * Math.asin(Math.sqrt(h)); };
+  const out = [];
+  for (const p of [...track].sort((a, b) => String(a.t).localeCompare(String(b.t)))) {
+    if (!Number.isFinite(p.lat) || !Number.isFinite(p.lon)) continue;
+    const u = out[out.length - 1]; if (!u) { out.push(p); continue; }
+    const m = dist(u, p), s = Math.max(1, (Date.parse(p.t) - Date.parse(u.t)) / 1000);
+    if (m < 3) continue;                    // casi el mismo punto
+    if (m / s > 39) continue;               // salto imposible (> 140 km/h)
+    out.push(p);
+  }
+  return out;
+}
+function dibujarRecorrido(mapa, track, acumular) {
+  const limpio = limpiarTrack(track || []); if (limpio.length < 1) return;
+  const t = limpio.map((p) => [p.lat, p.lon]);
+  if (t.length > 1) L.polyline(t, { color: '#f08a00', weight: 5, opacity: 0.9, lineJoin: 'round' }).addTo(mapa);
+  L.circleMarker(t[0], { radius: 7, color: '#fff', weight: 2, fillColor: '#16a34a', fillOpacity: 1 }).bindTooltip(`Inicio ${hora(limpio[0].t)}`).addTo(mapa);
+  if (t.length > 1) L.circleMarker(t[t.length - 1], { radius: 7, color: '#fff', weight: 2, fillColor: '#dc2626', fillOpacity: 1 }).bindTooltip(`Último punto ${hora(limpio[limpio.length - 1].t)}`).addTo(mapa);
+  if (acumular) acumular.push(...t);
 }
